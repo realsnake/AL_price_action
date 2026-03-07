@@ -1,0 +1,92 @@
+export interface Bar {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface Signal {
+  symbol: string;
+  signal_type: "buy" | "sell" | "hold";
+  price: number;
+  quantity: number;
+  reason: string;
+  timestamp: string;
+}
+
+export interface Position {
+  symbol: string;
+  qty: number;
+  avg_entry: number;
+  current_price: number;
+  market_value: number;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+}
+
+export interface Account {
+  equity: number;
+  cash: number;
+  buying_power: number;
+  portfolio_value: number;
+  pnl: number;
+  pnl_pct: number;
+}
+
+export interface Order {
+  id: string;
+  symbol: string;
+  side: string;
+  qty: string;
+  filled_qty: string;
+  status: string;
+  created_at: string;
+}
+
+export interface StrategyInfo {
+  name: string;
+  description: string;
+  params: Record<string, unknown>;
+  default_params: Record<string, unknown>;
+}
+
+export type Timeframe = "1m" | "5m" | "15m" | "1h" | "1D";
+
+export interface BacktestTrade {
+  entry_time: string;
+  exit_time: string;
+  side: string;
+  entry_price: number;
+  exit_price: number;
+  stop_loss: number;
+  quantity: number;
+  pnl: number;
+  pnl_pct: number;
+  reason: string;
+  exit_reason: string;
+}
+
+export interface BacktestResult {
+  strategy: string;
+  symbol: string;
+  timeframe: string;
+  period: string;
+  initial_capital: number;
+  final_capital: number;
+  total_return: number;
+  total_return_pct: number;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate: number;
+  avg_win: number;
+  avg_loss: number;
+  profit_factor: number;
+  max_drawdown: number;
+  max_drawdown_pct: number;
+  sharpe_ratio: number;
+  trades: BacktestTrade[];
+  equity_curve: { time: string; equity: number }[];
+}
