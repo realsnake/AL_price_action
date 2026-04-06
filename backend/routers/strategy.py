@@ -1,10 +1,10 @@
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from services.analysis_bars import DEFAULT_ANALYSIS_BAR_LIMIT, get_analysis_bars
 from services.strategy_engine import list_strategies, run_strategy
-from services.alpaca_client import alpaca_client
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
@@ -14,6 +14,8 @@ class RunStrategyRequest(BaseModel):
     symbol: str
     timeframe: str = "1D"
     start: str = "2024-01-01"
+    end: Optional[str] = None
+    limit: int = Field(DEFAULT_ANALYSIS_BAR_LIMIT, ge=1, le=1000)
     params: Optional[Dict[str, Any]] = None
 
 
@@ -23,10 +25,20 @@ def get_strategies():
 
 
 @router.post("/signals")
-def get_signals(req: RunStrategyRequest):
+async def get_signals(req: RunStrategyRequest):
     try:
-        bars = alpaca_client.get_bars(req.symbol, req.timeframe, req.start)
-        signals = run_strategy(req.name, req.symbol, bars, req.params)
-        return {"strategy": req.name, "symbol": req.symbol, "signals": signals}
+        symbol = req.symbol.upper()
+        bars = await get_analysis_bars(
+            symbol=symbol,
+            timeframe=req.timeframe,
+            start=req.start,
+            end=req.end,
+            limit=req.limit,
+        )
+        if not bars:
+            raise HTTPException(400, "No bar data returned")
+
+        signals = run_strategy(req.name, symbol, bars, req.params)
+        return {"strategy": req.name, "symbol": symbol, "signals": signals}
     except ValueError as e:
         raise HTTPException(400, str(e))
