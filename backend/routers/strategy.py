@@ -3,7 +3,11 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from services.analysis_bars import DEFAULT_ANALYSIS_BAR_LIMIT, get_analysis_bars
+from services.analysis_bars import (
+    DEFAULT_ANALYSIS_BAR_LIMIT,
+    MAX_ANALYSIS_BAR_LIMIT,
+    get_analysis_bars,
+)
 from services.strategy_engine import list_strategies, run_strategy
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
@@ -15,7 +19,7 @@ class RunStrategyRequest(BaseModel):
     timeframe: str = "1D"
     start: str = "2024-01-01"
     end: Optional[str] = None
-    limit: int = Field(DEFAULT_ANALYSIS_BAR_LIMIT, ge=1, le=1000)
+    limit: int = Field(DEFAULT_ANALYSIS_BAR_LIMIT, ge=1, le=MAX_ANALYSIS_BAR_LIMIT)
     params: Optional[Dict[str, Any]] = None
 
 

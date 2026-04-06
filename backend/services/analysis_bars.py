@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from services.bars_cache import get_bars_with_cache
 
-DEFAULT_ANALYSIS_BAR_LIMIT = 1000
+MAX_ANALYSIS_BAR_LIMIT = 1000
+DEFAULT_ANALYSIS_BAR_LIMIT = MAX_ANALYSIS_BAR_LIMIT
 
 
 async def get_analysis_bars(
