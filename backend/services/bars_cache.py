@@ -27,21 +27,15 @@ logger = logging.getLogger(__name__)
 MARKET_TZ = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
 SESSION_CLOSE = time(16, 0)
+HALF_DAY_CLOSE = time(13, 0)
 
 
 class _NyseHolidayCalendar(AbstractHolidayCalendar):
     rules = [
-        Holiday("New Year's Day", month=1, day=1, observance=nearest_workday),
         USMartinLutherKingJr,
         USPresidentsDay,
         USMemorialDay,
         GoodFriday,
-        Holiday(
-            "Juneteenth National Independence Day",
-            month=6,
-            day=19,
-            observance=nearest_workday,
-        ),
         Holiday("Independence Day", month=7, day=4, observance=nearest_workday),
         USLaborDay,
         USThanksgivingDay,
@@ -63,6 +57,9 @@ async def get_bars_with_cache(
         if end
         else datetime.now(timezone.utc)
     )
+
+    if end is not None and _first_expected_timestamp(start_dt, timeframe) > end_dt:
+        return []
 
     async with async_session() as session:
         rows = await _read_cached_rows(session, symbol, timeframe, start_dt, end_dt)
@@ -217,7 +214,7 @@ def _session_open_for(day: date) -> datetime:
 
 
 def _session_close_for(day: date) -> datetime:
-    return datetime.combine(day, SESSION_CLOSE, tzinfo=MARKET_TZ)
+    return datetime.combine(day, _session_close_time_for(day), tzinfo=MARKET_TZ)
 
 
 def _is_trading_day(day: date) -> bool:
@@ -238,7 +235,85 @@ def _market_holiday_dates(start_year: int, end_year: int) -> frozenset[date]:
         start=f"{start_year}-01-01",
         end=f"{end_year}-12-31",
     )
-    return frozenset(ts.date() for ts in holidays)
+    holiday_dates = {ts.date() for ts in holidays}
+    for year in range(start_year, end_year + 1):
+        holiday_dates.add(_observed_new_years_day(year))
+        observed_juneteenth = _observed_juneteenth(year)
+        if observed_juneteenth is not None:
+            holiday_dates.add(observed_juneteenth)
+    return frozenset(holiday_dates)
+
+
+def _session_close_time_for(day: date) -> time:
+    if _is_half_day(day):
+        return HALF_DAY_CLOSE
+    return SESSION_CLOSE
+
+
+def _is_half_day(day: date) -> bool:
+    return (
+        _is_day_after_thanksgiving(day)
+        or _is_christmas_eve_half_day(day)
+        or _is_independence_day_eve_half_day(day)
+    )
+
+
+def _is_day_after_thanksgiving(day: date) -> bool:
+    thanksgiving = _nth_weekday_of_month(day.year, 11, 3, 4)
+    return day == thanksgiving + timedelta(days=1)
+
+
+def _is_christmas_eve_half_day(day: date) -> bool:
+    return day.month == 12 and day.day == 24 and _is_trading_day(day)
+
+
+def _is_independence_day_eve_half_day(day: date) -> bool:
+    observed = _observed_independence_day(day.year)
+    if day >= observed:
+        return False
+
+    candidate = observed - timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return day == candidate
+
+
+def _observed_new_years_day(year: int) -> date:
+    actual = date(year, 1, 1)
+    if actual.weekday() == 5:
+        return actual
+    if actual.weekday() == 6:
+        return date(year, 1, 2)
+    return actual
+
+
+def _observed_juneteenth(year: int) -> date | None:
+    if year < 2021:
+        return None
+
+    actual = date(year, 6, 19)
+    if year == 2021:
+        return date(2021, 6, 18)
+    if actual.weekday() == 5:
+        return date(year, 6, 18)
+    if actual.weekday() == 6:
+        return date(year, 6, 20)
+    return actual
+
+
+def _observed_independence_day(year: int) -> date:
+    actual = date(year, 7, 4)
+    if actual.weekday() == 5:
+        return date(year, 7, 3)
+    if actual.weekday() == 6:
+        return date(year, 7, 5)
+    return actual
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+    first_day = date(year, month, 1)
+    offset = (weekday - first_day.weekday()) % 7
+    return first_day + timedelta(days=offset + 7 * (n - 1))
 
 
 def _serialize_rows(rows) -> list[dict]:

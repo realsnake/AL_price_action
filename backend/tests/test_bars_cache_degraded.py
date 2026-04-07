@@ -29,6 +29,37 @@ def _install_session(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_bars_with_cache_returns_empty_for_explicit_end_window_without_market_bars(
+    monkeypatch,
+):
+    remote_fetch_calls = 0
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return []
+
+    def fake_get_bars(*args, **kwargs):
+        nonlocal remote_fetch_calls
+        remote_fetch_calls += 1
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: True)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    result = await bars_cache.get_bars_with_cache(
+        symbol="qqq",
+        timeframe="1D",
+        start="2025-01-04",
+        end="2025-01-05",
+        limit=10,
+    )
+
+    assert remote_fetch_calls == 0
+    assert result == []
+
+
+@pytest.mark.asyncio
 async def test_get_bars_with_cache_returns_cache_only_for_friday_to_monday_daily_gap(
     monkeypatch,
 ):
@@ -70,6 +101,104 @@ async def test_get_bars_with_cache_returns_cache_only_for_friday_to_monday_daily
         },
         {
             "time": "2025-01-06T00:00:00+00:00",
+            "open": 100.5,
+            "high": 102.0,
+            "low": 100.0,
+            "close": 101.5,
+            "volume": 1200,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_bars_with_cache_keeps_2020_juneteenth_as_trading_day(monkeypatch):
+    rows = [
+        _DummyRow("2020-06-18T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2020-06-19T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+    ]
+    remote_fetch_calls = 0
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return rows
+
+    def fake_get_bars(*args, **kwargs):
+        nonlocal remote_fetch_calls
+        remote_fetch_calls += 1
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    result = await bars_cache.get_bars_with_cache(
+        symbol="qqq",
+        timeframe="1D",
+        start="2020-06-18",
+        limit=2,
+    )
+
+    assert remote_fetch_calls == 0
+    assert result == [
+        {
+            "time": "2020-06-18T00:00:00+00:00",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        {
+            "time": "2020-06-19T00:00:00+00:00",
+            "open": 100.5,
+            "high": 102.0,
+            "low": 100.0,
+            "close": 101.5,
+            "volume": 1200,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_bars_with_cache_keeps_2021_12_31_as_trading_day(monkeypatch):
+    rows = [
+        _DummyRow("2021-12-30T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2021-12-31T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+    ]
+    remote_fetch_calls = 0
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return rows
+
+    def fake_get_bars(*args, **kwargs):
+        nonlocal remote_fetch_calls
+        remote_fetch_calls += 1
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    result = await bars_cache.get_bars_with_cache(
+        symbol="qqq",
+        timeframe="1D",
+        start="2021-12-30",
+        limit=2,
+    )
+
+    assert remote_fetch_calls == 0
+    assert result == [
+        {
+            "time": "2021-12-30T00:00:00+00:00",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        {
+            "time": "2021-12-31T00:00:00+00:00",
             "open": 100.5,
             "high": 102.0,
             "low": 100.0,
@@ -122,6 +251,56 @@ async def test_get_bars_with_cache_returns_intraday_overnight_session_gap_cache_
         },
         {
             "time": "2025-01-06T14:30:00+00:00",
+            "open": 100.5,
+            "high": 102.0,
+            "low": 100.0,
+            "close": 101.5,
+            "volume": 1200,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_bars_with_cache_respects_half_day_early_close(monkeypatch):
+    rows = [
+        _DummyRow("2024-11-29T17:30:00+00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2024-12-02T14:30:00+00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+    ]
+    remote_fetch_calls = 0
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return rows
+
+    def fake_get_bars(*args, **kwargs):
+        nonlocal remote_fetch_calls
+        remote_fetch_calls += 1
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    result = await bars_cache.get_bars_with_cache(
+        symbol="qqq",
+        timeframe="1h",
+        start="2024-11-29T12:30:00-05:00",
+        end="2024-12-02T09:30:00-05:00",
+        limit=2,
+    )
+
+    assert remote_fetch_calls == 0
+    assert result == [
+        {
+            "time": "2024-11-29T17:30:00+00:00",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        {
+            "time": "2024-12-02T14:30:00+00:00",
             "open": 100.5,
             "high": 102.0,
             "low": 100.0,
