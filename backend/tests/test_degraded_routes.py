@@ -64,6 +64,21 @@ def test_market_bars_returns_normal_response_when_cache_succeeds(client, monkeyp
     }
 
 
+def test_market_bars_returns_503_when_cache_needs_alpaca(client, monkeypatch):
+    async def fake_get_bars_with_cache(symbol, timeframe, start, end=None, limit=1000):
+        raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
+
+    monkeypatch.setattr(market_router, "get_bars_with_cache", fake_get_bars_with_cache)
+
+    response = client.get(
+        "/api/market/bars/qqq",
+        params={"timeframe": "1D", "start": "2025-01-01"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Alpaca credentials are not configured"}
+
+
 def test_market_quote_returns_503_when_alpaca_unavailable(client, monkeypatch):
     monkeypatch.setattr(
         market_router.alpaca_client, "get_quote", _raise_alpaca_not_configured
