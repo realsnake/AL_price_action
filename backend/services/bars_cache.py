@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from functools import lru_cache
+from zoneinfo import ZoneInfo
 
+from pandas.tseries.holiday import (
+    AbstractHolidayCalendar,
+    GoodFriday,
+    Holiday,
+    USLaborDay,
+    USMartinLutherKingJr,
+    USMemorialDay,
+    USPresidentsDay,
+    USThanksgivingDay,
+    nearest_workday,
+)
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -11,6 +24,29 @@ from models import BarCache
 from services.alpaca_client import AlpacaNotConfiguredError, alpaca_client
 
 logger = logging.getLogger(__name__)
+MARKET_TZ = ZoneInfo("America/New_York")
+SESSION_OPEN = time(9, 30)
+SESSION_CLOSE = time(16, 0)
+
+
+class _NyseHolidayCalendar(AbstractHolidayCalendar):
+    rules = [
+        Holiday("New Year's Day", month=1, day=1, observance=nearest_workday),
+        USMartinLutherKingJr,
+        USPresidentsDay,
+        USMemorialDay,
+        GoodFriday,
+        Holiday(
+            "Juneteenth National Independence Day",
+            month=6,
+            day=19,
+            observance=nearest_workday,
+        ),
+        Holiday("Independence Day", month=7, day=4, observance=nearest_workday),
+        USLaborDay,
+        USThanksgivingDay,
+        Holiday("Christmas Day", month=12, day=25, observance=nearest_workday),
+    ]
 
 
 async def get_bars_with_cache(
@@ -21,9 +57,9 @@ async def get_bars_with_cache(
     limit: int = 1000,
 ) -> list[dict]:
     symbol = symbol.upper()
-    start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+    start_dt = _parse_request_timestamp(start)
     end_dt = (
-        datetime.fromisoformat(end).replace(tzinfo=timezone.utc)
+        _parse_request_timestamp(end)
         if end
         else datetime.now(timezone.utc)
     )
@@ -39,7 +75,7 @@ async def get_bars_with_cache(
         if not alpaca_client.is_configured():
             raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
-        fetch_start = fetch_start or start_dt
+        fetch_start = _normalize_timestamp(fetch_start or start_dt)
         new_bars = alpaca_client.get_bars(
             symbol, timeframe, fetch_start.isoformat(), end_dt.isoformat(), limit
         )
@@ -75,11 +111,10 @@ async def _read_cached_rows(session, symbol: str, timeframe: str, start_dt, end_
 
 def _cache_satisfies_request(rows, timeframe, start_dt, end_dt, limit, explicit_end):
     if not rows:
-        return False, None
+        return False, _first_expected_timestamp(start_dt, timeframe)
 
-    expected_timestamp = start_dt
+    expected_timestamp = _first_expected_timestamp(start_dt, timeframe)
     contiguous_count = 0
-    delta = _timeframe_delta(timeframe)
 
     for row in rows:
         row_timestamp = _normalize_timestamp(row.timestamp)
@@ -89,7 +124,7 @@ def _cache_satisfies_request(rows, timeframe, start_dt, end_dt, limit, explicit_
             return False, expected_timestamp
 
         contiguous_count += 1
-        expected_timestamp = _advance_timestamp(expected_timestamp, delta)
+        expected_timestamp = _next_expected_timestamp(expected_timestamp, timeframe)
 
         if explicit_end and expected_timestamp > end_dt:
             return True, None
@@ -102,6 +137,11 @@ def _cache_satisfies_request(rows, timeframe, start_dt, end_dt, limit, explicit_
     return (contiguous_count >= limit), (None if contiguous_count >= limit else expected_timestamp)
 
 
+def _parse_request_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return _normalize_timestamp(parsed)
+
+
 def _normalize_timestamp(value):
     if value is None:
         return None
@@ -110,19 +150,95 @@ def _normalize_timestamp(value):
     return value.astimezone(timezone.utc)
 
 
-def _advance_timestamp(value, delta):
-    return value + delta
+def _first_expected_timestamp(start_dt: datetime, timeframe: str) -> datetime:
+    if timeframe == "1D":
+        return _first_expected_daily_timestamp(start_dt)
+    return _first_expected_intraday_timestamp(start_dt, timeframe)
 
 
-def _timeframe_delta(timeframe: str) -> timedelta:
-    mapping = {
-        "1m": timedelta(minutes=1),
-        "5m": timedelta(minutes=5),
-        "15m": timedelta(minutes=15),
-        "1h": timedelta(hours=1),
-        "1D": timedelta(days=1),
-    }
-    return mapping.get(timeframe, timedelta(days=1))
+def _next_expected_timestamp(current: datetime, timeframe: str) -> datetime:
+    if timeframe == "1D":
+        return _next_daily_timestamp(current)
+    return _next_intraday_timestamp(current, timeframe)
+
+
+def _first_expected_daily_timestamp(start_dt: datetime) -> datetime:
+    expected = _normalize_timestamp(start_dt)
+    while not _is_trading_day(expected.date()):
+        expected = expected + timedelta(days=1)
+    return expected
+
+
+def _next_daily_timestamp(current: datetime) -> datetime:
+    expected = _normalize_timestamp(current) + timedelta(days=1)
+    while not _is_trading_day(expected.date()):
+        expected = expected + timedelta(days=1)
+    return expected
+
+
+def _first_expected_intraday_timestamp(start_dt: datetime, timeframe: str) -> datetime:
+    minutes = _timeframe_minutes(timeframe)
+    local = _normalize_timestamp(start_dt).astimezone(MARKET_TZ)
+    if not _is_trading_day(local.date()):
+        return _session_open_for(_next_trading_day(local.date()))
+
+    session_open = _session_open_for(local.date())
+    session_close = _session_close_for(local.date())
+
+    if local < session_open:
+        return session_open
+    if local >= session_close:
+        return _session_open_for(_next_trading_day(local.date()))
+
+    offset_minutes = int((local - session_open).total_seconds() // 60)
+    aligned_minutes = ((offset_minutes + minutes - 1) // minutes) * minutes
+    candidate = session_open + timedelta(minutes=aligned_minutes)
+    if candidate < session_close:
+        return candidate
+    return _session_open_for(_next_trading_day(local.date()))
+
+
+def _next_intraday_timestamp(current: datetime, timeframe: str) -> datetime:
+    minutes = _timeframe_minutes(timeframe)
+    local = _normalize_timestamp(current).astimezone(MARKET_TZ)
+    candidate = local + timedelta(minutes=minutes)
+    if candidate.date() == local.date() and candidate < _session_close_for(local.date()):
+        return candidate
+    return _session_open_for(_next_trading_day(local.date()))
+
+
+def _timeframe_minutes(timeframe: str) -> int:
+    mapping = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+    return mapping.get(timeframe, 60)
+
+
+def _session_open_for(day: date) -> datetime:
+    return datetime.combine(day, SESSION_OPEN, tzinfo=MARKET_TZ)
+
+
+def _session_close_for(day: date) -> datetime:
+    return datetime.combine(day, SESSION_CLOSE, tzinfo=MARKET_TZ)
+
+
+def _is_trading_day(day: date) -> bool:
+    return day.weekday() < 5 and day not in _market_holiday_dates(day.year - 1, day.year + 1)
+
+
+def _next_trading_day(day: date) -> date:
+    candidate = day + timedelta(days=1)
+    while not _is_trading_day(candidate):
+        candidate = candidate + timedelta(days=1)
+    return candidate
+
+
+@lru_cache(maxsize=64)
+def _market_holiday_dates(start_year: int, end_year: int) -> frozenset[date]:
+    calendar = _NyseHolidayCalendar()
+    holidays = calendar.holidays(
+        start=f"{start_year}-01-01",
+        end=f"{end_year}-12-31",
+    )
+    return frozenset(ts.date() for ts in holidays)
 
 
 def _serialize_rows(rows) -> list[dict]:

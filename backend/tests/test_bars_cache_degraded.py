@@ -29,12 +29,12 @@ def _install_session(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_bars_with_cache_returns_cache_only_when_end_is_omitted_and_limit_is_satisfied(
+async def test_get_bars_with_cache_returns_cache_only_for_friday_to_monday_daily_gap(
     monkeypatch,
 ):
     rows = [
-        _DummyRow("2025-01-01T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
-        _DummyRow("2025-01-02T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+        _DummyRow("2025-01-03T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2025-01-06T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
     ]
     remote_fetch_calls = 0
 
@@ -54,14 +54,14 @@ async def test_get_bars_with_cache_returns_cache_only_when_end_is_omitted_and_li
     result = await bars_cache.get_bars_with_cache(
         symbol="qqq",
         timeframe="1D",
-        start="2025-01-01",
+        start="2025-01-03",
         limit=2,
     )
 
     assert remote_fetch_calls == 0
     assert result == [
         {
-            "time": "2025-01-01T00:00:00+00:00",
+            "time": "2025-01-03T00:00:00+00:00",
             "open": 100.0,
             "high": 101.0,
             "low": 99.0,
@@ -69,7 +69,59 @@ async def test_get_bars_with_cache_returns_cache_only_when_end_is_omitted_and_li
             "volume": 1000,
         },
         {
-            "time": "2025-01-02T00:00:00+00:00",
+            "time": "2025-01-06T00:00:00+00:00",
+            "open": 100.5,
+            "high": 102.0,
+            "low": 100.0,
+            "close": 101.5,
+            "volume": 1200,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_bars_with_cache_returns_intraday_overnight_session_gap_cache_only(
+    monkeypatch,
+):
+    rows = [
+        _DummyRow("2025-01-03T20:30:00+00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2025-01-06T14:30:00+00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+    ]
+    remote_fetch_calls = 0
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return rows
+
+    def fake_get_bars(*args, **kwargs):
+        nonlocal remote_fetch_calls
+        remote_fetch_calls += 1
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    result = await bars_cache.get_bars_with_cache(
+        symbol="qqq",
+        timeframe="1h",
+        start="2025-01-03T15:30:00-05:00",
+        end="2025-01-06T09:30:00-05:00",
+        limit=2,
+    )
+
+    assert remote_fetch_calls == 0
+    assert result == [
+        {
+            "time": "2025-01-03T20:30:00+00:00",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        {
+            "time": "2025-01-06T14:30:00+00:00",
             "open": 100.5,
             "high": 102.0,
             "low": 100.0,
@@ -82,8 +134,8 @@ async def test_get_bars_with_cache_returns_cache_only_when_end_is_omitted_and_li
 @pytest.mark.asyncio
 async def test_get_bars_with_cache_raises_for_sparse_cache_gap(monkeypatch):
     rows = [
-        _DummyRow("2025-01-01T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
-        _DummyRow("2025-01-03T00:00:00", 101.0, 102.0, 100.0, 101.5, 1300),
+        _DummyRow("2025-01-06T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2025-01-08T00:00:00", 101.0, 102.0, 100.0, 101.5, 1300),
     ]
     remote_fetch_calls = 0
 
@@ -107,8 +159,8 @@ async def test_get_bars_with_cache_raises_for_sparse_cache_gap(monkeypatch):
         await bars_cache.get_bars_with_cache(
             symbol="qqq",
             timeframe="1D",
-            start="2025-01-01",
-            end="2025-01-03",
+            start="2025-01-06",
+            end="2025-01-08",
             limit=10,
         )
 
@@ -116,23 +168,21 @@ async def test_get_bars_with_cache_raises_for_sparse_cache_gap(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_bars_with_cache_backfills_from_first_missing_timestamp(monkeypatch):
+async def test_get_bars_with_cache_normalizes_offset_aware_bounds_before_fetching(
+    monkeypatch,
+):
     initial_rows = [
-        _DummyRow("2025-01-01T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
-        _DummyRow("2025-01-02T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
-        _DummyRow("2025-01-04T00:00:00", 101.5, 103.0, 101.0, 102.5, 1400),
-        _DummyRow("2025-01-05T00:00:00", 102.0, 104.0, 101.5, 103.0, 1500),
+        _DummyRow("2025-01-03T20:30:00+00:00", 100.0, 101.0, 99.0, 100.5, 1000),
     ]
     fetched_rows = [
-        _DummyRow("2025-01-03T00:00:00", 101.2, 102.2, 100.8, 101.8, 1300),
+        _DummyRow("2025-01-06T14:30:00+00:00", 100.5, 102.0, 100.0, 101.5, 1200),
     ]
-    full_rows = initial_rows[:2] + fetched_rows + initial_rows[2:]
     captured = {}
 
     async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
         return fake_read_cached_rows.results.pop(0)
 
-    fake_read_cached_rows.results = [initial_rows, full_rows]
+    fake_read_cached_rows.results = [initial_rows, initial_rows + fetched_rows]
 
     async def fake_upsert_bars(session, symbol, timeframe, bars):
         captured["upsert_bars"] = bars
@@ -155,23 +205,23 @@ async def test_get_bars_with_cache_backfills_from_first_missing_timestamp(monkey
 
     result = await bars_cache.get_bars_with_cache(
         symbol="qqq",
-        timeframe="1D",
-        start="2025-01-01",
-        end="2025-01-05",
+        timeframe="1h",
+        start="2025-01-03T15:30:00-05:00",
+        end="2025-01-06T09:30:00-05:00",
         limit=10,
     )
 
     assert captured["fetch"] == {
         "symbol": "QQQ",
-        "timeframe": "1D",
-        "start": "2025-01-03T00:00:00+00:00",
-        "end": "2025-01-05T00:00:00+00:00",
+        "timeframe": "1h",
+        "start": "2025-01-06T14:30:00+00:00",
+        "end": "2025-01-06T14:30:00+00:00",
         "limit": 10,
     }
     assert captured["upsert_bars"] == fetched_rows
     assert result == [
         {
-            "time": "2025-01-01T00:00:00+00:00",
+            "time": "2025-01-03T20:30:00+00:00",
             "open": 100.0,
             "high": 101.0,
             "low": 99.0,
@@ -179,36 +229,12 @@ async def test_get_bars_with_cache_backfills_from_first_missing_timestamp(monkey
             "volume": 1000,
         },
         {
-            "time": "2025-01-02T00:00:00+00:00",
+            "time": "2025-01-06T14:30:00+00:00",
             "open": 100.5,
             "high": 102.0,
             "low": 100.0,
             "close": 101.5,
             "volume": 1200,
-        },
-        {
-            "time": "2025-01-03T00:00:00+00:00",
-            "open": 101.2,
-            "high": 102.2,
-            "low": 100.8,
-            "close": 101.8,
-            "volume": 1300,
-        },
-        {
-            "time": "2025-01-04T00:00:00+00:00",
-            "open": 101.5,
-            "high": 103.0,
-            "low": 101.0,
-            "close": 102.5,
-            "volume": 1400,
-        },
-        {
-            "time": "2025-01-05T00:00:00+00:00",
-            "open": 102.0,
-            "high": 104.0,
-            "low": 101.5,
-            "close": 103.0,
-            "volume": 1500,
         },
     ]
 
@@ -216,10 +242,7 @@ async def test_get_bars_with_cache_backfills_from_first_missing_timestamp(monkey
 @pytest.mark.asyncio
 async def test_get_bars_with_cache_raises_when_backfill_still_leaves_gap(monkeypatch):
     rows = [
-        _DummyRow("2025-01-01T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
-        _DummyRow("2025-01-02T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
-        _DummyRow("2025-01-04T00:00:00", 101.5, 103.0, 101.0, 102.5, 1400),
-        _DummyRow("2025-01-05T00:00:00", 102.0, 104.0, 101.5, 103.0, 1500),
+        _DummyRow("2025-01-03T20:30:00+00:00", 100.0, 101.0, 99.0, 100.5, 1000),
     ]
     captured = {}
 
@@ -243,19 +266,22 @@ async def test_get_bars_with_cache_raises_when_backfill_still_leaves_gap(monkeyp
     monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: True)
     monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
 
-    with pytest.raises(RuntimeError, match="Historical bars are still incomplete after Alpaca backfill"):
+    with pytest.raises(
+        RuntimeError,
+        match="Historical bars are still incomplete after Alpaca backfill",
+    ):
         await bars_cache.get_bars_with_cache(
             symbol="qqq",
-            timeframe="1D",
-            start="2025-01-01",
-            end="2025-01-05",
+            timeframe="1h",
+            start="2025-01-03T15:30:00-05:00",
+            end="2025-01-06T09:30:00-05:00",
             limit=10,
         )
 
     assert captured["fetch"] == {
         "symbol": "QQQ",
-        "timeframe": "1D",
-        "start": "2025-01-03T00:00:00+00:00",
-        "end": "2025-01-05T00:00:00+00:00",
+        "timeframe": "1h",
+        "start": "2025-01-06T14:30:00+00:00",
+        "end": "2025-01-06T14:30:00+00:00",
         "limit": 10,
     }
