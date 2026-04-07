@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 
 from alpaca.data.live import StockDataStream
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+from services.alpaca_client import AlpacaNotConfiguredError, alpaca_client
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 _callbacks: dict[str, list] = {}
 _stream: StockDataStream | None = None
 _stream_task: asyncio.Task | None = None
+
+
+def is_live_stream_enabled() -> bool:
+    return alpaca_client.is_configured()
 
 
 async def _on_bar(bar):
@@ -54,6 +58,8 @@ async def _on_quote(quote):
 
 def _get_stream() -> StockDataStream:
     global _stream
+    if not is_live_stream_enabled():
+        raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
     if _stream is None:
         _stream = StockDataStream(ALPACA_API_KEY, ALPACA_SECRET_KEY)
     return _stream
@@ -63,6 +69,9 @@ async def start_stream():
     """Start the Alpaca data stream in the background."""
     global _stream_task
     if _stream_task is not None:
+        return
+    if not is_live_stream_enabled():
+        logger.warning("Alpaca stream disabled: credentials are not configured")
         return
 
     stream = _get_stream()
@@ -101,6 +110,8 @@ async def stop_stream():
 async def subscribe(symbol: str, callback):
     """Subscribe to real-time bars for a symbol."""
     symbol = symbol.upper()
+    if not is_live_stream_enabled():
+        raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
     if symbol not in _callbacks:
         _callbacks[symbol] = []
         stream = _get_stream()
@@ -112,6 +123,8 @@ async def subscribe(symbol: str, callback):
 async def unsubscribe(symbol: str, callback):
     """Unsubscribe a callback from a symbol."""
     symbol = symbol.upper()
+    if not is_live_stream_enabled():
+        return
     if symbol in _callbacks:
         try:
             _callbacks[symbol].remove(callback)

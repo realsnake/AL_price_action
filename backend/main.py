@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
 from routers import market, trading, strategy, ws, backtest
+from services.alpaca_client import alpaca_client
 from services import market_data
 
 
@@ -35,4 +36,9 @@ app.include_router(backtest.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    alpaca_configured = alpaca_client.is_configured()
+    return {
+        "status": "ok" if alpaca_configured else "degraded",
+        "alpaca_configured": alpaca_configured,
+        "live_stream_enabled": market_data.is_live_stream_enabled(),
+    }
