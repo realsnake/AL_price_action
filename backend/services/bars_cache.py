@@ -8,7 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from database import async_session
 from models import BarCache
-from services.alpaca_client import alpaca_client
+from services.alpaca_client import AlpacaNotConfiguredError, alpaca_client
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +20,6 @@ async def get_bars_with_cache(
     end: str | None = None,
     limit: int = 1000,
 ) -> list[dict]:
-    """Fetch bars with DB caching and incremental updates.
-
-    1. Query the latest cached timestamp for this symbol+timeframe.
-    2. If cache exists, only fetch new bars from API after the latest cached time.
-    3. Upsert new bars into the cache.
-    4. Return the requested range from the cache.
-    """
     symbol = symbol.upper()
     start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
     end_dt = (
@@ -36,55 +29,72 @@ async def get_bars_with_cache(
     )
 
     async with async_session() as session:
-        # Find the latest cached bar for this symbol+timeframe
-        result = await session.execute(
-            select(func.max(BarCache.timestamp)).where(
-                BarCache.symbol == symbol,
-                BarCache.timeframe == timeframe,
-            )
+        rows = await _read_cached_rows(
+            session, symbol, timeframe, start_dt, end_dt, limit
         )
-        latest_cached = result.scalar_one_or_none()
+        if _cache_satisfies_request(rows, end, end_dt, limit):
+            return _serialize_rows(rows)
 
-        # Determine the API fetch start time
-        if latest_cached is not None:
-            # Ensure timezone-aware
-            if latest_cached.tzinfo is None:
-                latest_cached = latest_cached.replace(tzinfo=timezone.utc)
-            # Re-fetch from the latest cached bar to update the potentially
-            # incomplete (still-open) bar, then fetch anything newer.
-            api_start = latest_cached.isoformat()
-        else:
-            # No cache at all — fetch from user-requested start
-            api_start = start_dt.isoformat()
+        if not alpaca_client.is_configured():
+            raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
-        # Fetch new bars from Alpaca API if needed
-        if api_start is not None:
-            try:
-                new_bars = alpaca_client.get_bars(
-                    symbol, timeframe, api_start, end_dt.isoformat(), limit
-                )
-                if new_bars:
-                    await _upsert_bars(session, symbol, timeframe, new_bars)
-                    logger.info(
-                        "Cached %d new bars for %s/%s", len(new_bars), symbol, timeframe
-                    )
-            except Exception:
-                logger.exception("Failed to fetch bars from API for %s", symbol)
-
-        # Read from cache for the requested range
-        result = await session.execute(
-            select(BarCache)
-            .where(
-                BarCache.symbol == symbol,
-                BarCache.timeframe == timeframe,
-                BarCache.timestamp >= start_dt,
-                BarCache.timestamp <= end_dt,
-            )
-            .order_by(BarCache.timestamp)
-            .limit(limit)
+        latest_cached = await _latest_cached_timestamp(session, symbol, timeframe)
+        api_start = (
+            latest_cached.isoformat()
+            if latest_cached is not None
+            else start_dt.isoformat()
         )
-        rows = result.scalars().all()
+        new_bars = alpaca_client.get_bars(
+            symbol, timeframe, api_start, end_dt.isoformat(), limit
+        )
+        if new_bars:
+            await _upsert_bars(session, symbol, timeframe, new_bars)
+            logger.info("Cached %d new bars for %s/%s", len(new_bars), symbol, timeframe)
 
+        refreshed_rows = await _read_cached_rows(
+            session, symbol, timeframe, start_dt, end_dt, limit
+        )
+
+    return _serialize_rows(refreshed_rows)
+
+
+async def _latest_cached_timestamp(session, symbol: str, timeframe: str):
+    result = await session.execute(
+        select(func.max(BarCache.timestamp)).where(
+            BarCache.symbol == symbol,
+            BarCache.timeframe == timeframe,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _read_cached_rows(session, symbol: str, timeframe: str, start_dt, end_dt, limit: int):
+    result = await session.execute(
+        select(BarCache)
+        .where(
+            BarCache.symbol == symbol,
+            BarCache.timeframe == timeframe,
+            BarCache.timestamp >= start_dt,
+            BarCache.timestamp <= end_dt,
+        )
+        .order_by(BarCache.timestamp)
+        .limit(limit)
+    )
+    return result.scalars().all()
+
+
+def _cache_satisfies_request(rows, end: str | None, end_dt, limit: int) -> bool:
+    if not rows:
+        return False
+    if end is not None:
+        last_ts = rows[-1].timestamp
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.replace(tzinfo=timezone.utc)
+        return last_ts >= end_dt
+    return len(rows) >= limit
+
+
+def _serialize_rows(rows) -> list[dict]:
     return [
         {
             "time": row.timestamp.isoformat(),
