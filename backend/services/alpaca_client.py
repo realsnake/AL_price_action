@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
-from alpaca.data.enums import DataFeed
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING
 
@@ -22,14 +22,37 @@ def _timeframe_from_str(tf: str) -> TimeFrame:
     return mapping.get(tf, TimeFrame(1, TimeFrameUnit.Day))
 
 
+class AlpacaNotConfiguredError(RuntimeError):
+    pass
+
+
 class AlpacaClient:
     def __init__(self):
-        self.data_client = StockHistoricalDataClient(
-            ALPACA_API_KEY, ALPACA_SECRET_KEY
-        )
-        self.trading_client = TradingClient(
-            ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING
-        )
+        self._data_client: StockHistoricalDataClient | None = None
+        self._trading_client: TradingClient | None = None
+
+    def is_configured(self) -> bool:
+        return bool(ALPACA_API_KEY and ALPACA_SECRET_KEY)
+
+    def _ensure_configured(self) -> None:
+        if not self.is_configured():
+            raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
+
+    def _get_data_client(self) -> StockHistoricalDataClient:
+        self._ensure_configured()
+        if self._data_client is None:
+            self._data_client = StockHistoricalDataClient(
+                ALPACA_API_KEY, ALPACA_SECRET_KEY
+            )
+        return self._data_client
+
+    def _get_trading_client(self) -> TradingClient:
+        self._ensure_configured()
+        if self._trading_client is None:
+            self._trading_client = TradingClient(
+                ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING
+            )
+        return self._trading_client
 
     def get_bars(self, symbol: str, timeframe: str, start: str, end: str | None = None, limit: int = 200) -> list[dict]:
         tf = _timeframe_from_str(timeframe)
@@ -41,7 +64,7 @@ class AlpacaClient:
             limit=limit,
             feed=DataFeed.IEX,
         )
-        bars = self.data_client.get_stock_bars(request)
+        bars = self._get_data_client().get_stock_bars(request)
         result = []
         for bar in bars[symbol]:
             result.append({
@@ -56,7 +79,7 @@ class AlpacaClient:
 
     def get_quote(self, symbol: str) -> dict:
         request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-        quote = self.data_client.get_stock_latest_quote(request)
+        quote = self._get_data_client().get_stock_latest_quote(request)
         q = quote[symbol]
         return {
             "symbol": symbol,
@@ -68,7 +91,7 @@ class AlpacaClient:
         }
 
     def get_account(self) -> dict:
-        account = self.trading_client.get_account()
+        account = self._get_trading_client().get_account()
         return {
             "equity": float(account.equity),
             "cash": float(account.cash),
@@ -79,7 +102,7 @@ class AlpacaClient:
         }
 
     def get_positions(self) -> list[dict]:
-        positions = self.trading_client.get_all_positions()
+        positions = self._get_trading_client().get_all_positions()
         return [
             {
                 "symbol": p.symbol,
@@ -101,7 +124,7 @@ class AlpacaClient:
             side=order_side,
             time_in_force=TimeInForce.DAY,
         )
-        order = self.trading_client.submit_order(request)
+        order = self._get_trading_client().submit_order(request)
         return {
             "id": str(order.id),
             "symbol": order.symbol,
@@ -112,12 +135,12 @@ class AlpacaClient:
         }
 
     def cancel_order(self, order_id: str):
-        self.trading_client.cancel_order_by_id(order_id)
+        self._get_trading_client().cancel_order_by_id(order_id)
 
     def get_orders(self, status: str = "open") -> list[dict]:
         query_status = QueryOrderStatus.OPEN if status == "open" else QueryOrderStatus.CLOSED
         request = GetOrdersRequest(status=query_status, limit=50)
-        orders = self.trading_client.get_orders(request)
+        orders = self._get_trading_client().get_orders(request)
         return [
             {
                 "id": str(o.id),
