@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select, func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -29,23 +29,18 @@ async def get_bars_with_cache(
     )
 
     async with async_session() as session:
-        rows = await _read_cached_rows(
-            session, symbol, timeframe, start_dt, end_dt, limit
-        )
-        if _cache_satisfies_request(rows, end, end_dt, limit):
+        cache_bounds = await _read_cache_bounds(session, symbol, timeframe)
+        if _cache_satisfies_request(cache_bounds, start_dt, end_dt):
+            rows = await _read_cached_rows(
+                session, symbol, timeframe, start_dt, end_dt, limit
+            )
             return _serialize_rows(rows)
 
         if not alpaca_client.is_configured():
             raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
-        latest_cached = await _latest_cached_timestamp(session, symbol, timeframe)
-        api_start = (
-            latest_cached.isoformat()
-            if latest_cached is not None
-            else start_dt.isoformat()
-        )
         new_bars = alpaca_client.get_bars(
-            symbol, timeframe, api_start, end_dt.isoformat(), limit
+            symbol, timeframe, start_dt.isoformat(), end_dt.isoformat(), limit
         )
         if new_bars:
             await _upsert_bars(session, symbol, timeframe, new_bars)
@@ -58,17 +53,26 @@ async def get_bars_with_cache(
     return _serialize_rows(refreshed_rows)
 
 
-async def _latest_cached_timestamp(session, symbol: str, timeframe: str):
+async def _read_cache_bounds(session, symbol: str, timeframe: str):
     result = await session.execute(
-        select(func.max(BarCache.timestamp)).where(
+        select(
+            func.min(BarCache.timestamp),
+            func.max(BarCache.timestamp),
+        ).where(
             BarCache.symbol == symbol,
             BarCache.timeframe == timeframe,
         )
     )
-    return result.scalar_one_or_none()
+    row = result.first()
+    if row is None:
+        return None, None
+    earliest, latest = row
+    return _normalize_timestamp(earliest), _normalize_timestamp(latest)
 
 
-async def _read_cached_rows(session, symbol: str, timeframe: str, start_dt, end_dt, limit: int):
+async def _read_cached_rows(
+    session, symbol: str, timeframe: str, start_dt, end_dt, limit: int
+):
     result = await session.execute(
         select(BarCache)
         .where(
@@ -83,15 +87,19 @@ async def _read_cached_rows(session, symbol: str, timeframe: str, start_dt, end_
     return result.scalars().all()
 
 
-def _cache_satisfies_request(rows, end: str | None, end_dt, limit: int) -> bool:
-    if not rows:
+def _cache_satisfies_request(cache_bounds, start_dt, end_dt) -> bool:
+    earliest, latest = cache_bounds
+    if earliest is None or latest is None:
         return False
-    if end is not None:
-        last_ts = rows[-1].timestamp
-        if last_ts.tzinfo is None:
-            last_ts = last_ts.replace(tzinfo=timezone.utc)
-        return last_ts >= end_dt
-    return len(rows) >= limit
+    return earliest <= start_dt and latest >= end_dt
+
+
+def _normalize_timestamp(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _serialize_rows(rows) -> list[dict]:
@@ -136,14 +144,3 @@ async def _upsert_bars(
         )
         await session.execute(stmt)
     await session.commit()
-
-
-def _timeframe_delta(timeframe: str) -> timedelta:
-    mapping = {
-        "1m": timedelta(minutes=1),
-        "5m": timedelta(minutes=5),
-        "15m": timedelta(minutes=15),
-        "1h": timedelta(hours=1),
-        "1D": timedelta(days=1),
-    }
-    return mapping.get(timeframe, timedelta(days=1))
