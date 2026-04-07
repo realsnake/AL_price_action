@@ -1,8 +1,8 @@
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from services.alpaca_client import alpaca_client
+from services.alpaca_client import AlpacaNotConfiguredError, alpaca_client
 from services.bars_cache import get_bars_with_cache
 
 router = APIRouter(prefix="/api/market", tags=["market"])
@@ -16,10 +16,16 @@ async def get_bars(
     end: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=1000),
 ):
-    bars = await get_bars_with_cache(symbol, timeframe, start, end, limit)
+    try:
+        bars = await get_bars_with_cache(symbol, timeframe, start, end, limit)
+    except AlpacaNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"symbol": symbol, "timeframe": timeframe, "bars": bars}
 
 
 @router.get("/quote/{symbol}")
 def get_quote(symbol: str):
-    return alpaca_client.get_quote(symbol)
+    try:
+        return alpaca_client.get_quote(symbol)
+    except AlpacaNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

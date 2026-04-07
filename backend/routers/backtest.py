@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from services.alpaca_client import AlpacaNotConfiguredError
 from services.analysis_bars import (
     DEFAULT_ANALYSIS_BAR_LIMIT,
     MAX_ANALYSIS_BAR_LIMIT,
@@ -59,6 +60,8 @@ async def run_backtest_api(req: BacktestRequest):
             timeframe=req.timeframe,
         )
         return result.to_dict()
+    except AlpacaNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except HTTPException:
         raise
     except ValueError as e:

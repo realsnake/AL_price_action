@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from services.alpaca_client import AlpacaNotConfiguredError
 from services.analysis_bars import (
     DEFAULT_ANALYSIS_BAR_LIMIT,
     MAX_ANALYSIS_BAR_LIMIT,
@@ -44,5 +45,7 @@ async def get_signals(req: RunStrategyRequest):
 
         signals = run_strategy(req.name, symbol, bars, req.params)
         return {"strategy": req.name, "symbol": symbol, "signals": signals}
+    except AlpacaNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as e:
         raise HTTPException(400, str(e))
