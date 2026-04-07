@@ -2,6 +2,7 @@ import importlib
 import sys
 
 import pytest
+from fastapi.testclient import TestClient
 
 from services import alpaca_client, market_data
 
@@ -20,7 +21,16 @@ def test_health_reports_degraded_without_credentials(monkeypatch):
 
     main = _reload_main_module()
 
-    assert main.health() == {
+    async def fake_init_db():
+        return None
+
+    monkeypatch.setattr(main, "init_db", fake_init_db)
+
+    with TestClient(main.app) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
         "status": "degraded",
         "alpaca_configured": False,
         "live_stream_enabled": False,
