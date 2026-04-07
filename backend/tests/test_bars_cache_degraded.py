@@ -211,3 +211,51 @@ async def test_get_bars_with_cache_backfills_from_first_missing_timestamp(monkey
             "volume": 1500,
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_bars_with_cache_raises_when_backfill_still_leaves_gap(monkeypatch):
+    rows = [
+        _DummyRow("2025-01-01T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2025-01-02T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+        _DummyRow("2025-01-04T00:00:00", 101.5, 103.0, 101.0, 102.5, 1400),
+        _DummyRow("2025-01-05T00:00:00", 102.0, 104.0, 101.5, 103.0, 1500),
+    ]
+    captured = {}
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return fake_read_cached_rows.results.pop(0)
+
+    fake_read_cached_rows.results = [rows, rows]
+
+    def fake_get_bars(symbol, timeframe, start, end=None, limit=1000):
+        captured["fetch"] = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "start": start,
+            "end": end,
+            "limit": limit,
+        }
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: True)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    with pytest.raises(RuntimeError, match="Historical bars are still incomplete after Alpaca backfill"):
+        await bars_cache.get_bars_with_cache(
+            symbol="qqq",
+            timeframe="1D",
+            start="2025-01-01",
+            end="2025-01-05",
+            limit=10,
+        )
+
+    assert captured["fetch"] == {
+        "symbol": "QQQ",
+        "timeframe": "1D",
+        "start": "2025-01-03T00:00:00+00:00",
+        "end": "2025-01-05T00:00:00+00:00",
+        "limit": 10,
+    }

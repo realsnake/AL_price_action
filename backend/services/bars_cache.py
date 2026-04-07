@@ -50,6 +50,11 @@ async def get_bars_with_cache(
         refreshed_rows = await _read_cached_rows(
             session, symbol, timeframe, start_dt, end_dt
         )
+        refreshed_hit, _ = _cache_satisfies_request(
+            refreshed_rows, timeframe, start_dt, end_dt, limit, end is not None
+        )
+        if not refreshed_hit:
+            raise RuntimeError("Historical bars are still incomplete after Alpaca backfill")
 
     return _serialize_rows(refreshed_rows[:limit])
 
