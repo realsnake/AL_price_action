@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from database import async_session
@@ -29,50 +29,32 @@ async def get_bars_with_cache(
     )
 
     async with async_session() as session:
-        cache_bounds = await _read_cache_bounds(session, symbol, timeframe)
-        if _cache_satisfies_request(cache_bounds, start_dt, end_dt):
-            rows = await _read_cached_rows(
-                session, symbol, timeframe, start_dt, end_dt, limit
-            )
-            return _serialize_rows(rows)
+        rows = await _read_cached_rows(session, symbol, timeframe, start_dt, end_dt)
+        cache_hit, fetch_start = _cache_satisfies_request(
+            rows, timeframe, start_dt, end_dt, limit, end is not None
+        )
+        if cache_hit:
+            return _serialize_rows(rows[:limit])
 
         if not alpaca_client.is_configured():
             raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
+        fetch_start = fetch_start or start_dt
         new_bars = alpaca_client.get_bars(
-            symbol, timeframe, start_dt.isoformat(), end_dt.isoformat(), limit
+            symbol, timeframe, fetch_start.isoformat(), end_dt.isoformat(), limit
         )
         if new_bars:
             await _upsert_bars(session, symbol, timeframe, new_bars)
             logger.info("Cached %d new bars for %s/%s", len(new_bars), symbol, timeframe)
 
         refreshed_rows = await _read_cached_rows(
-            session, symbol, timeframe, start_dt, end_dt, limit
+            session, symbol, timeframe, start_dt, end_dt
         )
 
-    return _serialize_rows(refreshed_rows)
+    return _serialize_rows(refreshed_rows[:limit])
 
 
-async def _read_cache_bounds(session, symbol: str, timeframe: str):
-    result = await session.execute(
-        select(
-            func.min(BarCache.timestamp),
-            func.max(BarCache.timestamp),
-        ).where(
-            BarCache.symbol == symbol,
-            BarCache.timeframe == timeframe,
-        )
-    )
-    row = result.first()
-    if row is None:
-        return None, None
-    earliest, latest = row
-    return _normalize_timestamp(earliest), _normalize_timestamp(latest)
-
-
-async def _read_cached_rows(
-    session, symbol: str, timeframe: str, start_dt, end_dt, limit: int
-):
+async def _read_cached_rows(session, symbol: str, timeframe: str, start_dt, end_dt):
     result = await session.execute(
         select(BarCache)
         .where(
@@ -82,16 +64,37 @@ async def _read_cached_rows(
             BarCache.timestamp <= end_dt,
         )
         .order_by(BarCache.timestamp)
-        .limit(limit)
     )
     return result.scalars().all()
 
 
-def _cache_satisfies_request(cache_bounds, start_dt, end_dt) -> bool:
-    earliest, latest = cache_bounds
-    if earliest is None or latest is None:
-        return False
-    return earliest <= start_dt and latest >= end_dt
+def _cache_satisfies_request(rows, timeframe, start_dt, end_dt, limit, explicit_end):
+    if not rows:
+        return False, None
+
+    expected_timestamp = start_dt
+    contiguous_count = 0
+    delta = _timeframe_delta(timeframe)
+
+    for row in rows:
+        row_timestamp = _normalize_timestamp(row.timestamp)
+        if row_timestamp < expected_timestamp:
+            continue
+        if row_timestamp > expected_timestamp:
+            return False, expected_timestamp
+
+        contiguous_count += 1
+        expected_timestamp = _advance_timestamp(expected_timestamp, delta)
+
+        if explicit_end and expected_timestamp > end_dt:
+            return True, None
+        if not explicit_end and contiguous_count >= limit:
+            return True, None
+
+    if explicit_end:
+        return False, expected_timestamp
+
+    return (contiguous_count >= limit), (None if contiguous_count >= limit else expected_timestamp)
 
 
 def _normalize_timestamp(value):
@@ -100,6 +103,21 @@ def _normalize_timestamp(value):
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _advance_timestamp(value, delta):
+    return value + delta
+
+
+def _timeframe_delta(timeframe: str) -> timedelta:
+    mapping = {
+        "1m": timedelta(minutes=1),
+        "5m": timedelta(minutes=5),
+        "15m": timedelta(minutes=15),
+        "1h": timedelta(hours=1),
+        "1D": timedelta(days=1),
+    }
+    return mapping.get(timeframe, timedelta(days=1))
 
 
 def _serialize_rows(rows) -> list[dict]:

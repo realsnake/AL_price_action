@@ -29,7 +29,7 @@ def _install_session(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_bars_with_cache_returns_short_complete_cache_without_remote_fetch(
+async def test_get_bars_with_cache_returns_cache_only_when_end_is_omitted_and_limit_is_satisfied(
     monkeypatch,
 ):
     rows = [
@@ -38,10 +38,7 @@ async def test_get_bars_with_cache_returns_short_complete_cache_without_remote_f
     ]
     remote_fetch_calls = 0
 
-    async def fake_read_cache_bounds(session, symbol, timeframe):
-        return rows[0].timestamp, rows[-1].timestamp
-
-    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt, limit):
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
         return rows
 
     def fake_get_bars(*args, **kwargs):
@@ -49,18 +46,7 @@ async def test_get_bars_with_cache_returns_short_complete_cache_without_remote_f
         remote_fetch_calls += 1
         return []
 
-    class FakeDatetime:
-        @staticmethod
-        def fromisoformat(value):
-            return datetime.fromisoformat(value)
-
-        @staticmethod
-        def now(tz=None):
-            return datetime(2025, 1, 2, tzinfo=timezone.utc)
-
     _install_session(monkeypatch)
-    monkeypatch.setattr(bars_cache, "datetime", FakeDatetime)
-    monkeypatch.setattr(bars_cache, "_read_cache_bounds", fake_read_cache_bounds)
     monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
     monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
     monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
@@ -69,7 +55,7 @@ async def test_get_bars_with_cache_returns_short_complete_cache_without_remote_f
         symbol="qqq",
         timeframe="1D",
         start="2025-01-01",
-        limit=200,
+        limit=2,
     )
 
     assert remote_fetch_calls == 0
@@ -94,20 +80,14 @@ async def test_get_bars_with_cache_returns_short_complete_cache_without_remote_f
 
 
 @pytest.mark.asyncio
-async def test_get_bars_with_cache_returns_capped_range_without_remote_fetch(
-    monkeypatch,
-):
+async def test_get_bars_with_cache_raises_for_sparse_cache_gap(monkeypatch):
     rows = [
         _DummyRow("2025-01-01T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
-        _DummyRow("2025-01-02T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+        _DummyRow("2025-01-03T00:00:00", 101.0, 102.0, 100.0, 101.5, 1300),
     ]
     remote_fetch_calls = 0
 
-    async def fake_read_cache_bounds(session, symbol, timeframe):
-        return rows[0].timestamp, datetime(2025, 1, 5, tzinfo=timezone.utc)
-
-    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt, limit):
-        assert limit == 2
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
         return rows
 
     def fake_get_bars(*args, **kwargs):
@@ -116,47 +96,6 @@ async def test_get_bars_with_cache_returns_capped_range_without_remote_fetch(
         return []
 
     _install_session(monkeypatch)
-    monkeypatch.setattr(bars_cache, "_read_cache_bounds", fake_read_cache_bounds)
-    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
-    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
-    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
-
-    result = await bars_cache.get_bars_with_cache(
-        symbol="qqq",
-        timeframe="1D",
-        start="2025-01-01",
-        end="2025-01-05",
-        limit=2,
-    )
-
-    assert remote_fetch_calls == 0
-    assert len(result) == 2
-    assert result[-1]["close"] == 101.5
-
-
-@pytest.mark.asyncio
-async def test_get_bars_with_cache_raises_when_cache_tail_does_not_cover_start(
-    monkeypatch,
-):
-    rows = [
-        _DummyRow("2025-01-04T00:00:00", 101.0, 102.0, 100.0, 101.5, 1100),
-        _DummyRow("2025-01-05T00:00:00", 101.5, 103.0, 101.0, 102.5, 1200),
-    ]
-    remote_fetch_calls = 0
-
-    async def fake_read_cache_bounds(session, symbol, timeframe):
-        return rows[0].timestamp, rows[-1].timestamp
-
-    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt, limit):
-        return rows
-
-    def fake_get_bars(*args, **kwargs):
-        nonlocal remote_fetch_calls
-        remote_fetch_calls += 1
-        return []
-
-    _install_session(monkeypatch)
-    monkeypatch.setattr(bars_cache, "_read_cache_bounds", fake_read_cache_bounds)
     monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
     monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
     monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
@@ -169,28 +108,31 @@ async def test_get_bars_with_cache_raises_when_cache_tail_does_not_cover_start(
             symbol="qqq",
             timeframe="1D",
             start="2025-01-01",
-            end="2025-01-05",
-            limit=2,
+            end="2025-01-03",
+            limit=10,
         )
 
     assert remote_fetch_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_get_bars_with_cache_backfills_from_requested_start(monkeypatch):
-    rows = [
+async def test_get_bars_with_cache_backfills_from_first_missing_timestamp(monkeypatch):
+    initial_rows = [
         _DummyRow("2025-01-01T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+        _DummyRow("2025-01-02T00:00:00", 100.5, 102.0, 100.0, 101.5, 1200),
+        _DummyRow("2025-01-04T00:00:00", 101.5, 103.0, 101.0, 102.5, 1400),
+        _DummyRow("2025-01-05T00:00:00", 102.0, 104.0, 101.5, 103.0, 1500),
     ]
+    fetched_rows = [
+        _DummyRow("2025-01-03T00:00:00", 101.2, 102.2, 100.8, 101.8, 1300),
+    ]
+    full_rows = initial_rows[:2] + fetched_rows + initial_rows[2:]
     captured = {}
 
-    async def fake_read_cache_bounds(session, symbol, timeframe):
-        return (
-            datetime(2025, 1, 4, tzinfo=timezone.utc),
-            datetime(2025, 1, 5, tzinfo=timezone.utc),
-        )
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return fake_read_cached_rows.results.pop(0)
 
-    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt, limit):
-        return rows
+    fake_read_cached_rows.results = [initial_rows, full_rows]
 
     async def fake_upsert_bars(session, symbol, timeframe, bars):
         captured["upsert_bars"] = bars
@@ -203,10 +145,9 @@ async def test_get_bars_with_cache_backfills_from_requested_start(monkeypatch):
             "end": end,
             "limit": limit,
         }
-        return rows
+        return fetched_rows
 
     _install_session(monkeypatch)
-    monkeypatch.setattr(bars_cache, "_read_cache_bounds", fake_read_cache_bounds)
     monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
     monkeypatch.setattr(bars_cache, "_upsert_bars", fake_upsert_bars)
     monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: True)
@@ -216,18 +157,18 @@ async def test_get_bars_with_cache_backfills_from_requested_start(monkeypatch):
         symbol="qqq",
         timeframe="1D",
         start="2025-01-01",
-        end="2025-01-31",
-        limit=200,
+        end="2025-01-05",
+        limit=10,
     )
 
     assert captured["fetch"] == {
         "symbol": "QQQ",
         "timeframe": "1D",
-        "start": "2025-01-01T00:00:00+00:00",
-        "end": "2025-01-31T00:00:00+00:00",
-        "limit": 200,
+        "start": "2025-01-03T00:00:00+00:00",
+        "end": "2025-01-05T00:00:00+00:00",
+        "limit": 10,
     }
-    assert captured["upsert_bars"] == rows
+    assert captured["upsert_bars"] == fetched_rows
     assert result == [
         {
             "time": "2025-01-01T00:00:00+00:00",
@@ -236,5 +177,37 @@ async def test_get_bars_with_cache_backfills_from_requested_start(monkeypatch):
             "low": 99.0,
             "close": 100.5,
             "volume": 1000,
-        }
+        },
+        {
+            "time": "2025-01-02T00:00:00+00:00",
+            "open": 100.5,
+            "high": 102.0,
+            "low": 100.0,
+            "close": 101.5,
+            "volume": 1200,
+        },
+        {
+            "time": "2025-01-03T00:00:00+00:00",
+            "open": 101.2,
+            "high": 102.2,
+            "low": 100.8,
+            "close": 101.8,
+            "volume": 1300,
+        },
+        {
+            "time": "2025-01-04T00:00:00+00:00",
+            "open": 101.5,
+            "high": 103.0,
+            "low": 101.0,
+            "close": 102.5,
+            "volume": 1400,
+        },
+        {
+            "time": "2025-01-05T00:00:00+00:00",
+            "open": 102.0,
+            "high": 104.0,
+            "low": 101.5,
+            "close": 103.0,
+            "volume": 1500,
+        },
     ]
