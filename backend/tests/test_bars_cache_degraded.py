@@ -311,6 +311,80 @@ async def test_get_bars_with_cache_respects_half_day_early_close(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_bars_with_cache_does_not_treat_2026_07_02_as_independence_half_day(
+    monkeypatch,
+):
+    rows = [
+        _DummyRow("2026-07-02T16:30:00+00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+    ]
+    remote_fetch_calls = 0
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return rows
+
+    def fake_get_bars(*args, **kwargs):
+        nonlocal remote_fetch_calls
+        remote_fetch_calls += 1
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    with pytest.raises(
+        AlpacaNotConfiguredError,
+        match="Alpaca credentials are not configured",
+    ):
+        await bars_cache.get_bars_with_cache(
+            symbol="qqq",
+            timeframe="1h",
+            start="2026-07-02T12:30:00-04:00",
+            end="2026-07-02T13:30:00-04:00",
+            limit=10,
+        )
+
+    assert remote_fetch_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_get_bars_with_cache_does_not_treat_2022_07_01_as_independence_half_day(
+    monkeypatch,
+):
+    rows = [
+        _DummyRow("2022-07-01T16:30:00+00:00", 100.0, 101.0, 99.0, 100.5, 1000),
+    ]
+    remote_fetch_calls = 0
+
+    async def fake_read_cached_rows(session, symbol, timeframe, start_dt, end_dt):
+        return rows
+
+    def fake_get_bars(*args, **kwargs):
+        nonlocal remote_fetch_calls
+        remote_fetch_calls += 1
+        return []
+
+    _install_session(monkeypatch)
+    monkeypatch.setattr(bars_cache, "_read_cached_rows", fake_read_cached_rows)
+    monkeypatch.setattr(bars_cache.alpaca_client, "is_configured", lambda: False)
+    monkeypatch.setattr(bars_cache.alpaca_client, "get_bars", fake_get_bars)
+
+    with pytest.raises(
+        AlpacaNotConfiguredError,
+        match="Alpaca credentials are not configured",
+    ):
+        await bars_cache.get_bars_with_cache(
+            symbol="qqq",
+            timeframe="1h",
+            start="2022-07-01T12:30:00-04:00",
+            end="2022-07-01T13:30:00-04:00",
+            limit=10,
+        )
+
+    assert remote_fetch_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_get_bars_with_cache_raises_for_sparse_cache_gap(monkeypatch):
     rows = [
         _DummyRow("2025-01-06T00:00:00", 100.0, 101.0, 99.0, 100.5, 1000),

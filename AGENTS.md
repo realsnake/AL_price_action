@@ -52,7 +52,7 @@ PYTHONPYCACHEPREFIX=/tmp/codex_pycache python3 -m compileall -q backend
 ### Backend targeted tests
 ```bash
 cd backend
-.venv/bin/python -m pytest tests/test_analysis_bars.py tests/test_strategy_router.py tests/test_backtest_router.py -q
+.venv/bin/python -m pytest tests/test_alpaca_client.py tests/test_degraded_startup.py tests/test_bars_cache_degraded.py tests/test_degraded_routes.py tests/test_analysis_bars.py tests/test_strategy_router.py tests/test_backtest_router.py -q
 ```
 
 `backend/requirements-dev.txt` extends the runtime requirements with the pytest stack used by the committed backend tests.
@@ -154,7 +154,12 @@ Frontend `TradePanel` → `POST /api/trading/order` → `trade_executor` → Alp
 ## Current Realities And Gaps
 
 - `README.md` and `PLAN.md` describe an earlier phase of the project and lag behind the actual implementation
+- The backend now supports degraded startup without Alpaca credentials
+- `/api/health` reports `degraded` with `alpaca_configured=false` and `live_stream_enabled=false` when credentials are missing
+- Cache-backed historical endpoints can still work without Alpaca if the requested bars are already present locally, but `/api/market/quote/*`, live market WebSockets, and trading/account endpoints return `503` until Alpaca is configured
+- `backend/.env` is optional for local UI or cache-only work, but missing Alpaca credentials disables live market data and all trading/account capabilities
 - Strategy scan and backtest now share `services/analysis_bars.py`, but both still ultimately depend on the cached historical bar path rather than two independent sources
+- `services/bars_cache.py` now uses a lightweight NYSE market-calendar helper so degraded-mode cache validation respects weekends, holidays, and early closes for the supported stock timeframes
 - Live market WebSocket flow currently pushes bars; quote handling code exists in `market_data.py` but is not subscribed or surfaced in the UI
 - Frontend API helpers include orders/cancel support, but the current UI does not expose open orders or local trade history
 - `Trade` rows are recorded at submission time with `price=0.0`; there is no fill reconciliation path yet

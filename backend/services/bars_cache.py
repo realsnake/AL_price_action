@@ -268,13 +268,10 @@ def _is_christmas_eve_half_day(day: date) -> bool:
 
 
 def _is_independence_day_eve_half_day(day: date) -> bool:
-    observed = _observed_independence_day(day.year)
-    if day >= observed:
+    actual = date(day.year, 7, 4)
+    if actual.weekday() not in (1, 2, 3, 4):
         return False
-
-    candidate = observed - timedelta(days=1)
-    while candidate.weekday() >= 5:
-        candidate -= timedelta(days=1)
+    candidate = actual - timedelta(days=1)
     return day == candidate
 
 
