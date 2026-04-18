@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
-from zoneinfo import ZoneInfo
+from datetime import datetime
+from datetime import time
 
-MARKET_TZ = ZoneInfo("America/New_York")
-RTH_OPEN = time(9, 30)
-RTH_CLOSE = time(16, 0)
+from services.bars_cache import MARKET_TZ, SESSION_OPEN, _is_trading_day, _session_close_for
 
 
 @dataclass(frozen=True)
@@ -35,23 +33,19 @@ def get_research_profile(name: str | None) -> ResearchProfile | None:
 
 
 def filter_bars_for_research_profile(
-    bars: list[dict], research_profile: str | None
+    bars: list[dict], profile: ResearchProfile | None
 ) -> list[dict]:
-    profile = get_research_profile(research_profile)
     if profile is None or profile.session != "rth":
         return bars
-    return [bar for bar in bars if _is_rth_bar(bar["time"])]
+    return [bar for bar in bars if is_rth_bar_timestamp(bar["time"])]
 
 
-def market_time(timestamp: str) -> datetime:
-    return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(MARKET_TZ)
-
-
-def session_day(timestamp: str) -> str:
-    return market_time(timestamp).date().isoformat()
-
-
-def _is_rth_bar(timestamp: str) -> bool:
-    local = market_time(timestamp)
-    local_time = local.time()
-    return local.weekday() < 5 and RTH_OPEN <= local_time < RTH_CLOSE
+def is_rth_bar_timestamp(timestamp: str) -> bool:
+    local = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
+        MARKET_TZ
+    )
+    return (
+        local.weekday() < 5
+        and _is_trading_day(local.date())
+        and SESSION_OPEN <= local.time() < _session_close_for(local.date()).time()
+    )
