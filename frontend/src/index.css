@@ -5,5 +5,13 @@ body {
   min-height: 100vh;
   background-color: #0f1117;
   color: #e1e4e8;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: "Avenir Next", "SF Pro Display", ui-sans-serif, system-ui,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.28);
+  color: #f8fafc;
 }

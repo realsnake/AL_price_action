@@ -7,6 +7,8 @@ interface TradePanelProps {
   positions: Position[];
   currentSymbol: string;
   onOrderPlaced: () => void;
+  disabledReason?: string | null;
+  statusLine?: string;
 }
 
 export default function TradePanel({
@@ -14,6 +16,8 @@ export default function TradePanel({
   positions,
   currentSymbol,
   onOrderPlaced,
+  disabledReason,
+  statusLine,
 }: TradePanelProps) {
   const [qty, setQty] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -34,34 +38,65 @@ export default function TradePanel({
   };
 
   return (
-    <div className="bg-gray-900 rounded-lg p-4 border border-gray-800 space-y-4">
-      {/* Account Summary */}
+    <div className="space-y-4 rounded-2xl border border-white/10 bg-[#0b1524]/90 p-4 shadow-[0_18px_60px_-28px_rgba(15,23,42,0.95)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+            Execution
+          </p>
+          <h3 className="mt-2 text-sm font-semibold text-white">
+            Paper trading control
+          </h3>
+        </div>
+        {statusLine && (
+          <p className="max-w-[160px] text-right text-[11px] text-slate-500">
+            {statusLine}
+          </p>
+        )}
+      </div>
+
       {account && (
-        <div className="grid grid-cols-2 gap-2 text-sm">
+        <div className="grid grid-cols-2 gap-3 rounded-2xl border border-white/5 bg-white/[0.03] p-3 text-sm">
           <div>
-            <span className="text-gray-500">Equity</span>
-            <p className="text-white font-mono">${account.equity.toLocaleString()}</p>
-          </div>
-          <div>
-            <span className="text-gray-500">Cash</span>
-            <p className="text-white font-mono">${account.cash.toLocaleString()}</p>
-          </div>
-          <div>
-            <span className="text-gray-500">P&L</span>
-            <p className={`font-mono ${account.pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-              {account.pnl >= 0 ? "+" : ""}${account.pnl.toFixed(2)} ({account.pnl_pct.toFixed(2)}%)
+            <span className="text-slate-500">Equity</span>
+            <p className="font-mono text-white">
+              ${account.equity.toLocaleString()}
             </p>
           </div>
           <div>
-            <span className="text-gray-500">Buying Power</span>
-            <p className="text-white font-mono">${account.buying_power.toLocaleString()}</p>
+            <span className="text-slate-500">Cash</span>
+            <p className="font-mono text-white">
+              ${account.cash.toLocaleString()}
+            </p>
+          </div>
+          <div>
+            <span className="text-slate-500">P&L</span>
+            <p
+              className={`font-mono ${account.pnl >= 0 ? "text-green-400" : "text-red-400"}`}
+            >
+              {account.pnl >= 0 ? "+" : ""}${account.pnl.toFixed(2)} (
+              {account.pnl_pct.toFixed(2)}%)
+            </p>
+          </div>
+          <div>
+            <span className="text-slate-500">Buying Power</span>
+            <p className="font-mono text-white">
+              ${account.buying_power.toLocaleString()}
+            </p>
           </div>
         </div>
       )}
 
-      {/* Order Form */}
-      <div className="border-t border-gray-800 pt-3">
-        <label className="text-sm text-gray-400 block mb-1">
+      {!account && (
+        <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-slate-400">
+          Account snapshot unavailable right now. If the workspace is degraded or
+          disconnected, cached market data can still load while trading remains
+          paused.
+        </div>
+      )}
+
+      <div className="border-t border-white/10 pt-3">
+        <label className="mb-1 block text-sm text-slate-400">
           Quantity for {currentSymbol}
         </label>
         <input
@@ -69,45 +104,55 @@ export default function TradePanel({
           min={1}
           value={qty}
           onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
-          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm font-mono"
+          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-mono text-white"
         />
         <div className="flex gap-2 mt-2">
           <button
             onClick={() => handleOrder("buy")}
-            disabled={loading}
-            className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white py-2 rounded text-sm font-medium"
+            disabled={loading || Boolean(disabledReason)}
+            className="flex-1 rounded-xl bg-emerald-500/90 py-2 text-sm font-medium text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             BUY
           </button>
           <button
             onClick={() => handleOrder("sell")}
-            disabled={loading}
-            className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white py-2 rounded text-sm font-medium"
+            disabled={loading || Boolean(disabledReason)}
+            className="flex-1 rounded-xl bg-rose-500/90 py-2 text-sm font-medium text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             SELL
           </button>
         </div>
-        {error && <p className="text-red-400 text-xs mt-1">{error}</p>}
+        {disabledReason && (
+          <p className="mt-2 text-xs text-amber-300">
+            {disabledReason}
+          </p>
+        )}
+        {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
       </div>
 
-      {/* Positions */}
       {positions.length > 0 && (
-        <div className="border-t border-gray-800 pt-3">
-          <h3 className="text-sm text-gray-400 mb-2">Positions</h3>
+        <div className="border-t border-white/10 pt-3">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm text-slate-300">Positions</h3>
+            <span className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
+              {positions.length} open
+            </span>
+          </div>
           <div className="space-y-2">
             {positions.map((p) => (
               <div
                 key={p.symbol}
-                className="flex justify-between items-center text-sm bg-gray-800 rounded px-3 py-2"
+                className="flex items-center justify-between rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-sm"
               >
                 <div>
-                  <span className="text-white font-medium">{p.symbol}</span>
-                  <span className="text-gray-500 ml-2">{p.qty} shares</span>
+                  <span className="font-medium text-white">{p.symbol}</span>
+                  <span className="ml-2 text-slate-500">{p.qty} shares</span>
                 </div>
                 <span
                   className={`font-mono ${p.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"}`}
                 >
-                  {p.unrealized_pnl >= 0 ? "+" : ""}${p.unrealized_pnl.toFixed(2)}
+                  {p.unrealized_pnl >= 0 ? "+" : ""}$
+                  {p.unrealized_pnl.toFixed(2)}
                 </span>
               </div>
             ))}
