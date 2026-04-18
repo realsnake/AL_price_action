@@ -107,6 +107,11 @@ async def _read_cached_rows(session, symbol: str, timeframe: str, start_dt, end_
 
 
 def _cache_satisfies_request(rows, timeframe, start_dt, end_dt, limit, explicit_end):
+    if timeframe == "1D":
+        return _cache_satisfies_daily_request(
+            rows, start_dt, end_dt, limit, explicit_end
+        )
+
     if not rows:
         return False, _first_expected_timestamp(start_dt, timeframe)
 
@@ -123,7 +128,7 @@ def _cache_satisfies_request(rows, timeframe, start_dt, end_dt, limit, explicit_
         contiguous_count += 1
         expected_timestamp = _next_expected_timestamp(expected_timestamp, timeframe)
 
-        if explicit_end and expected_timestamp > end_dt:
+        if expected_timestamp > end_dt:
             return True, None
         if not explicit_end and contiguous_count >= limit:
             return True, None
@@ -132,6 +137,36 @@ def _cache_satisfies_request(rows, timeframe, start_dt, end_dt, limit, explicit_
         return False, expected_timestamp
 
     return (contiguous_count >= limit), (None if contiguous_count >= limit else expected_timestamp)
+
+
+def _cache_satisfies_daily_request(rows, start_dt, end_dt, limit, explicit_end):
+    if not rows:
+        return False, _first_expected_daily_timestamp(start_dt)
+
+    expected_day = _first_expected_trading_day(start_dt)
+    contiguous_count = 0
+
+    for row in rows:
+        row_day = _normalize_timestamp(row.timestamp).date()
+        if row_day < expected_day:
+            continue
+        if row_day > expected_day:
+            return False, _daily_bar_timestamp(expected_day)
+
+        contiguous_count += 1
+        expected_day = _next_trading_day(expected_day)
+
+        if _daily_bar_timestamp(expected_day) > end_dt:
+            return True, None
+        if not explicit_end and contiguous_count >= limit:
+            return True, None
+
+    next_expected = _daily_bar_timestamp(expected_day)
+    if next_expected > end_dt:
+        return True, None
+    if explicit_end:
+        return False, next_expected
+    return (contiguous_count >= limit), (None if contiguous_count >= limit else next_expected)
 
 
 def _parse_request_timestamp(value: str) -> datetime:
@@ -160,17 +195,22 @@ def _next_expected_timestamp(current: datetime, timeframe: str) -> datetime:
 
 
 def _first_expected_daily_timestamp(start_dt: datetime) -> datetime:
-    expected = _normalize_timestamp(start_dt)
-    while not _is_trading_day(expected.date()):
-        expected = expected + timedelta(days=1)
-    return expected
+    return _daily_bar_timestamp(_first_expected_trading_day(start_dt))
+
+
+def _first_expected_trading_day(start_dt: datetime) -> date:
+    expected_day = _normalize_timestamp(start_dt).date()
+    while not _is_trading_day(expected_day):
+        expected_day = expected_day + timedelta(days=1)
+    return expected_day
 
 
 def _next_daily_timestamp(current: datetime) -> datetime:
-    expected = _normalize_timestamp(current) + timedelta(days=1)
-    while not _is_trading_day(expected.date()):
-        expected = expected + timedelta(days=1)
-    return expected
+    current_day = _normalize_timestamp(current).astimezone(MARKET_TZ).date()
+    next_day = current_day + timedelta(days=1)
+    while not _is_trading_day(next_day):
+        next_day = next_day + timedelta(days=1)
+    return _daily_bar_timestamp(next_day)
 
 
 def _first_expected_intraday_timestamp(start_dt: datetime, timeframe: str) -> datetime:
@@ -215,6 +255,12 @@ def _session_open_for(day: date) -> datetime:
 
 def _session_close_for(day: date) -> datetime:
     return datetime.combine(day, _session_close_time_for(day), tzinfo=MARKET_TZ)
+
+
+def _daily_bar_timestamp(day: date) -> datetime:
+    return datetime.combine(day, time.min, tzinfo=MARKET_TZ).astimezone(
+        timezone.utc
+    )
 
 
 def _is_trading_day(day: date) -> bool:
