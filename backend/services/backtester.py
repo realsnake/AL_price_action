@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from services.research_profile import get_research_profile, market_time, session_day
 from strategies.base import Signal, SignalType
 
 
@@ -80,6 +81,7 @@ def run_backtest(
     risk_per_trade_pct: float = 2.0,
     symbol: str = "QQQ",
     timeframe: str = "1D",
+    research_profile: str | None = None,
 ) -> BacktestResult:
     """
     Simulate trades based on signals with stop-loss and take-profit.
@@ -95,13 +97,23 @@ def run_backtest(
     max_dd = 0.0
     trades: list[TradeRecord] = []
     equity_curve: list[dict] = []
+    profile = get_research_profile(research_profile)
 
     # Build a time->bar index for quick lookup
-    bar_by_time = {}
     bar_list_idx = {}
+    session_bar_index = {}
+    session_last_bar = set()
+    session_counts = {}
+    session_signal_counts = {}
     for idx, bar in enumerate(bars):
-        bar_by_time[bar["time"]] = bar
-        bar_list_idx[bar["time"]] = idx
+        current_time = bar["time"]
+        bar_list_idx[current_time] = idx
+        day = session_day(current_time)
+        session_counts[day] = session_counts.get(day, 0) + 1
+        session_bar_index[current_time] = session_counts[day] - 1
+        is_last_bar = idx == len(bars) - 1 or session_day(bars[idx + 1]["time"]) != day
+        if is_last_bar:
+            session_last_bar.add(current_time)
 
     # Track open position
     position = None  # {side, entry_price, stop, target, qty, entry_time, reason}
@@ -110,12 +122,38 @@ def run_backtest(
     sorted_signals = sorted(signals, key=lambda s: s.timestamp)
     signal_by_time = {}
     for sig in sorted_signals:
-        t = sig.timestamp.isoformat()
-        # Match to closest bar time
-        for bar in bars:
-            if bar["time"][:10] == t[:10]:  # match by date
-                signal_by_time[bar["time"]] = sig
-                break
+        signal_time = sig.timestamp.isoformat()
+        signal_by_time[signal_time] = sig
+        signal_day = session_day(signal_time)
+        session_signal_counts[signal_day] = session_signal_counts.get(signal_day, 0) + 1
+
+    def close_position(exit_time: str, exit_price: float, exit_reason: str) -> None:
+        nonlocal capital, position
+        if position is None:
+            return
+
+        if position["side"] == "long":
+            pnl = (exit_price - position["entry_price"]) * position["qty"]
+        else:
+            pnl = (position["entry_price"] - exit_price) * position["qty"]
+
+        pnl_pct = pnl / (position["entry_price"] * position["qty"]) * 100
+
+        trades.append(TradeRecord(
+            entry_time=position["entry_time"],
+            exit_time=exit_time,
+            side=position["side"],
+            entry_price=position["entry_price"],
+            exit_price=exit_price,
+            stop_loss=position["stop"],
+            quantity=position["qty"],
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            reason=position["reason"],
+            exit_reason=exit_reason,
+        ))
+        capital += pnl
+        position = None
 
     # Walk through bars in order
     for i, bar in enumerate(bars):
@@ -142,33 +180,42 @@ def run_backtest(
                     exit_price = position["target"]
 
             if hit_stop or hit_target:
-                if position["side"] == "long":
-                    pnl = (exit_price - position["entry_price"]) * position["qty"]
-                else:
-                    pnl = (position["entry_price"] - exit_price) * position["qty"]
-
-                pnl_pct = pnl / (position["entry_price"] * position["qty"]) * 100
-
-                trades.append(TradeRecord(
-                    entry_time=position["entry_time"],
+                close_position(
                     exit_time=current_time,
-                    side=position["side"],
-                    entry_price=position["entry_price"],
                     exit_price=exit_price,
-                    stop_loss=position["stop"],
-                    quantity=position["qty"],
-                    pnl=pnl,
-                    pnl_pct=pnl_pct,
-                    reason=position["reason"],
                     exit_reason="stop_loss" if hit_stop else "take_profit",
-                ))
-                capital += pnl
-                position = None
+                )
+
+        if (
+            position is not None
+            and profile is not None
+            and profile.flatten_daily
+            and current_time in session_last_bar
+        ):
+            close_position(
+                exit_time=current_time,
+                exit_price=bar["close"],
+                exit_reason="session_close",
+            )
 
         # Check for new signal on this bar (only enter if no position)
         if position is None and current_time in signal_by_time:
             sig = signal_by_time[current_time]
             if sig.signal_type in (SignalType.BUY, SignalType.SELL):
+                if profile is not None:
+                    if profile.long_only and sig.signal_type == SignalType.SELL:
+                        continue
+                    if (
+                        session_signal_counts.get(session_day(current_time), 0) > 1
+                        and session_bar_index.get(current_time, 0) < profile.skip_opening_bars
+                    ):
+                        continue
+                    if (
+                        profile.entry_cutoff is not None
+                        and market_time(current_time).time() > profile.entry_cutoff
+                    ):
+                        continue
+
                 entry_price = sig.price
                 if entry_price <= 0:
                     continue
@@ -220,27 +267,11 @@ def run_backtest(
     # Close any remaining position at last bar close
     if position is not None and len(bars) > 0:
         last_bar = bars[-1]
-        exit_price = last_bar["close"]
-        if position["side"] == "long":
-            pnl = (exit_price - position["entry_price"]) * position["qty"]
-        else:
-            pnl = (position["entry_price"] - exit_price) * position["qty"]
-        pnl_pct = pnl / (position["entry_price"] * position["qty"]) * 100
-
-        trades.append(TradeRecord(
-            entry_time=position["entry_time"],
+        close_position(
             exit_time=last_bar["time"],
-            side=position["side"],
-            entry_price=position["entry_price"],
-            exit_price=exit_price,
-            stop_loss=position["stop"],
-            quantity=position["qty"],
-            pnl=pnl,
-            pnl_pct=pnl_pct,
-            reason=position["reason"],
+            exit_price=last_bar["close"],
             exit_reason="end_of_data",
-        ))
-        capital += pnl
+        )
 
     # Compute statistics
     wins = [t for t in trades if t.pnl > 0]
