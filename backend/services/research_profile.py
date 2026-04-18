@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import time
+from datetime import timezone
 
 from services.bars_cache import MARKET_TZ, SESSION_OPEN, _is_trading_day, _session_close_for
 
@@ -41,9 +42,10 @@ def filter_bars_for_research_profile(
 
 
 def market_time(timestamp: str) -> datetime:
-    return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
-        MARKET_TZ
-    )
+    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(MARKET_TZ)
 
 
 def session_day(timestamp: str) -> str:
