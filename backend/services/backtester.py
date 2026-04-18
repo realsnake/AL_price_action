@@ -183,18 +183,6 @@ def run_backtest(
                     exit_reason="stop_loss" if hit_stop else "take_profit",
                 )
 
-        if (
-            position is not None
-            and profile is not None
-            and profile.flatten_daily
-            and current_time in session_last_bar
-        ):
-            close_position(
-                exit_time=current_time,
-                exit_price=bar["close"],
-                exit_reason="session_close",
-            )
-
         # Check for new signal on this bar (only enter if no position)
         if position is None and current_time in signal_by_time:
             sig = signal_by_time[current_time]
@@ -239,6 +227,18 @@ def run_backtest(
                     "entry_time": current_time,
                     "reason": sig.reason,
                 }
+
+        if (
+            position is not None
+            and profile is not None
+            and profile.flatten_daily
+            and current_time in session_last_bar
+        ):
+            close_position(
+                exit_time=current_time,
+                exit_price=bar["close"],
+                exit_reason="session_close",
+            )
 
         # Track equity
         unrealized = 0.0

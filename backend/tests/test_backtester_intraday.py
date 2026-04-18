@@ -159,3 +159,38 @@ def test_run_backtest_skips_opening_bars_enforces_cutoff_and_flattens_daily():
     assert result.trades[0]["entry_time"] == "2025-01-06T14:40:00+00:00"
     assert result.trades[0]["exit_time"] == "2025-01-06T20:55:00+00:00"
     assert result.trades[0]["exit_reason"] == "session_close"
+
+
+def test_run_backtest_flattens_position_opened_on_session_final_bar():
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 500.0, 500.2, 499.9, 500.1),
+        _bar("2025-01-06T14:35:00+00:00", 500.1, 500.3, 500.0, 500.2),
+        _bar("2025-01-06T14:40:00+00:00", 500.2, 500.4, 500.1, 500.3),
+        _bar("2025-01-06T20:30:00+00:00", 500.3, 500.4, 500.2, 500.35),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=500.35,
+            quantity=1,
+            reason="enter-last-bar",
+            timestamp=datetime.fromisoformat("2025-01-06T20:30:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_breakout_pullback",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=10.0,
+        take_profit_pct=20.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["entry_time"] == "2025-01-06T20:30:00+00:00"
+    assert result.trades[0]["exit_time"] == "2025-01-06T20:30:00+00:00"
+    assert result.trades[0]["exit_reason"] == "session_close"
