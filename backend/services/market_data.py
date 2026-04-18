@@ -65,6 +65,33 @@ def _get_stream() -> StockDataStream:
     return _stream
 
 
+def _is_running_on_stream_loop(stream: StockDataStream) -> bool:
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return bool(getattr(stream, "_running", False)) and getattr(
+        stream, "_loop", None
+    ) is current_loop
+
+
+def _subscribe_bars(stream: StockDataStream, symbol: str) -> None:
+    if _is_running_on_stream_loop(stream):
+        stream._ensure_coroutine(_on_bar)
+        stream._handlers["bars"][symbol] = _on_bar
+        asyncio.create_task(stream._send_subscribe_msg())
+        return
+    stream.subscribe_bars(_on_bar, symbol)
+
+
+def _unsubscribe_bars(stream: StockDataStream, symbol: str) -> None:
+    if _is_running_on_stream_loop(stream):
+        stream._handlers["bars"].pop(symbol, None)
+        asyncio.create_task(stream._send_unsubscribe_msg("bars", [symbol]))
+        return
+    stream.unsubscribe_bars(symbol)
+
+
 async def start_stream():
     """Start the Alpaca data stream in the background."""
     global _stream_task
@@ -115,7 +142,7 @@ async def subscribe(symbol: str, callback):
     if symbol not in _callbacks:
         _callbacks[symbol] = []
         stream = _get_stream()
-        stream.subscribe_bars(_on_bar, symbol)
+        _subscribe_bars(stream, symbol)
         logger.info("Subscribed to bars for %s", symbol)
     _callbacks[symbol].append(callback)
 
@@ -133,5 +160,5 @@ async def unsubscribe(symbol: str, callback):
         if not _callbacks[symbol]:
             del _callbacks[symbol]
             stream = _get_stream()
-            stream.unsubscribe_bars(symbol)
+            _unsubscribe_bars(stream, symbol)
             logger.info("Unsubscribed from bars for %s", symbol)
