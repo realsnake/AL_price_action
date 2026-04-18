@@ -54,6 +54,8 @@ export interface StrategyInfo {
 
 export type Timeframe = "1m" | "5m" | "15m" | "1h" | "1D";
 
+export type ResearchProfile = "qqq_5m_phase1";
+
 export interface BacktestTrade {
   entry_time: string;
   exit_time: string;
@@ -89,4 +91,26 @@ export interface BacktestResult {
   sharpe_ratio: number;
   trades: BacktestTrade[];
   equity_curve: { time: string; equity: number }[];
+}
+
+export type DataSource = "network" | "cache";
+
+export type WorkspaceMode =
+  | "live"
+  | "syncing"
+  | "standby"
+  | "degraded"
+  | "api_down"
+  | "offline";
+
+export interface HealthStatus {
+  status: "ok" | "degraded";
+  alpacaConfigured: boolean;
+  liveStreamEnabled: boolean;
+}
+
+export interface DataSnapshot<T> {
+  data: T;
+  source: DataSource;
+  cachedAt: string | null;
 }
