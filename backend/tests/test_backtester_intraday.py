@@ -77,6 +77,57 @@ def test_run_backtest_ignores_short_signals_for_long_only_profile():
     assert result.total_trades == 0
 
 
+def test_run_backtest_uses_first_tradable_signal_when_multiple_share_timestamp():
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 500.0, 500.2, 499.9, 500.1),
+        _bar("2025-01-06T14:35:00+00:00", 500.1, 500.3, 500.0, 500.2),
+        _bar("2025-01-06T14:40:00+00:00", 500.2, 500.9, 500.1, 500.7),
+        _bar("2025-01-06T20:55:00+00:00", 500.7, 501.0, 500.6, 500.9),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.SELL,
+            price=500.2,
+            quantity=1,
+            reason="short-not-allowed",
+            timestamp=datetime.fromisoformat("2025-01-06T14:40:00+00:00"),
+        ),
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=500.6,
+            quantity=1,
+            reason="first-tradable-buy",
+            timestamp=datetime.fromisoformat("2025-01-06T14:40:00+00:00"),
+        ),
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=500.8,
+            quantity=1,
+            reason="later-buy",
+            timestamp=datetime.fromisoformat("2025-01-06T14:40:00+00:00"),
+        ),
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_breakout_pullback",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=10.0,
+        take_profit_pct=20.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["entry_time"] == "2025-01-06T14:40:00+00:00"
+    assert result.trades[0]["entry_price"] == 500.6
+    assert result.trades[0]["reason"] == "first-tradable-buy"
+
+
 def test_run_backtest_skips_opening_bars_even_for_single_signal():
     bars = [
         _bar("2025-01-06T14:30:00+00:00", 500.0, 500.2, 499.9, 500.1),

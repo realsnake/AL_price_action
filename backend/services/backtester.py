@@ -100,13 +100,11 @@ def run_backtest(
     profile = get_research_profile(research_profile)
 
     # Build a time->bar index for quick lookup
-    bar_list_idx = {}
     session_bar_index = {}
     session_last_bar = set()
     session_counts = {}
     for idx, bar in enumerate(bars):
         current_time = bar["time"]
-        bar_list_idx[current_time] = idx
         day = session_day(current_time)
         session_counts[day] = session_counts.get(day, 0) + 1
         session_bar_index[current_time] = session_counts[day] - 1
@@ -119,10 +117,10 @@ def run_backtest(
 
     # Sort signals by time
     sorted_signals = sorted(signals, key=lambda s: s.timestamp)
-    signal_by_time = {}
+    signal_by_time: dict[str, list[Signal]] = {}
     for sig in sorted_signals:
         signal_time = sig.timestamp.isoformat()
-        signal_by_time[signal_time] = sig
+        signal_by_time.setdefault(signal_time, []).append(sig)
 
     def close_position(exit_time: str, exit_price: float, exit_reason: str) -> None:
         nonlocal capital, position
@@ -185,8 +183,9 @@ def run_backtest(
 
         # Check for new signal on this bar (only enter if no position)
         if position is None and current_time in signal_by_time:
-            sig = signal_by_time[current_time]
-            if sig.signal_type in (SignalType.BUY, SignalType.SELL):
+            for sig in signal_by_time[current_time]:
+                if sig.signal_type not in (SignalType.BUY, SignalType.SELL):
+                    continue
                 if profile is not None:
                     if profile.long_only and sig.signal_type == SignalType.SELL:
                         continue
@@ -227,6 +226,7 @@ def run_backtest(
                     "entry_time": current_time,
                     "reason": sig.reason,
                 }
+                break
 
         if (
             position is not None
