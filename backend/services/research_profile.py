@@ -37,15 +37,27 @@ def filter_bars_for_research_profile(
 ) -> list[dict]:
     if profile is None or profile.session != "rth":
         return bars
-    return [bar for bar in bars if is_rth_bar_timestamp(bar["time"])]
+    return [bar for bar in bars if _is_rth_bar(bar["time"])]
 
 
-def is_rth_bar_timestamp(timestamp: str) -> bool:
-    local = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
+def market_time(timestamp: str) -> datetime:
+    return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
         MARKET_TZ
     )
+
+
+def session_day(timestamp: str) -> str:
+    return market_time(timestamp).date().isoformat()
+
+
+def _is_rth_bar(timestamp: str) -> bool:
+    local = market_time(timestamp)
     return (
         local.weekday() < 5
         and _is_trading_day(local.date())
         and SESSION_OPEN <= local.time() < _session_close_for(local.date()).time()
     )
+
+
+def is_rth_bar_timestamp(timestamp: str) -> bool:
+    return _is_rth_bar(timestamp)
