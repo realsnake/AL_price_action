@@ -34,13 +34,16 @@ async def test_run_backtest_uses_analysis_bars_service(monkeypatch):
     ]
     captured = {}
 
-    async def fake_get_analysis_bars(symbol, timeframe, start, end=None, limit=1000):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         captured["bars_request"] = {
             "symbol": symbol,
             "timeframe": timeframe,
             "start": start,
             "end": end,
             "limit": limit,
+            "research_profile": research_profile,
         }
         return bars
 
@@ -68,6 +71,7 @@ async def test_run_backtest_uses_analysis_bars_service(monkeypatch):
         start="2025-01-01",
         end="2025-01-31",
         limit=250,
+        research_profile="qqq_5m_phase1",
         params={"ema_period": 20, "quantity": 1},
         initial_capital=100000.0,
         stop_loss_pct=2.0,
@@ -85,6 +89,7 @@ async def test_run_backtest_uses_analysis_bars_service(monkeypatch):
         "start": "2025-01-01",
         "end": "2025-01-31",
         "limit": 250,
+        "research_profile": "qqq_5m_phase1",
     }
     assert captured["get_strategy"] == {
         "name": "brooks_pullback_count",
@@ -94,11 +99,14 @@ async def test_run_backtest_uses_analysis_bars_service(monkeypatch):
     assert captured["run_backtest"]["symbol"] == "QQQ"
     assert captured["run_backtest"]["bars"] == bars
     assert captured["run_backtest"]["signals"] == ["BUY_SIGNAL"]
+    assert captured["run_backtest"]["research_profile"] == "qqq_5m_phase1"
 
 
 @pytest.mark.asyncio
 async def test_run_backtest_returns_400_when_no_bars(monkeypatch):
-    async def fake_get_analysis_bars(symbol, timeframe, start, end=None, limit=1000):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         return []
 
     monkeypatch.setattr(backtest_router, "get_analysis_bars", fake_get_analysis_bars)

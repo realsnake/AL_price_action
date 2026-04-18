@@ -24,6 +24,7 @@ class BacktestRequest(BaseModel):
     start: str = "2025-01-01"
     end: Optional[str] = None
     limit: int = Field(DEFAULT_ANALYSIS_BAR_LIMIT, ge=1, le=MAX_ANALYSIS_BAR_LIMIT)
+    research_profile: Optional[str] = None
     params: Optional[Dict[str, Any]] = None
     initial_capital: float = 100000.0
     stop_loss_pct: float = 2.0
@@ -41,6 +42,7 @@ async def run_backtest_api(req: BacktestRequest):
             start=req.start,
             end=req.end,
             limit=req.limit,
+            research_profile=req.research_profile,
         )
         if not bars:
             raise HTTPException(400, "No bar data returned")
@@ -58,6 +60,7 @@ async def run_backtest_api(req: BacktestRequest):
             risk_per_trade_pct=req.risk_per_trade_pct,
             symbol=symbol,
             timeframe=req.timeframe,
+            research_profile=req.research_profile,
         )
         return result.to_dict()
     except AlpacaNotConfiguredError as exc:

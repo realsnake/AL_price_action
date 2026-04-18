@@ -21,6 +21,7 @@ class RunStrategyRequest(BaseModel):
     start: str = "2024-01-01"
     end: Optional[str] = None
     limit: int = Field(DEFAULT_ANALYSIS_BAR_LIMIT, ge=1, le=MAX_ANALYSIS_BAR_LIMIT)
+    research_profile: Optional[str] = None
     params: Optional[Dict[str, Any]] = None
 
 
@@ -39,6 +40,7 @@ async def get_signals(req: RunStrategyRequest):
             start=req.start,
             end=req.end,
             limit=req.limit,
+            research_profile=req.research_profile,
         )
         if not bars:
             raise HTTPException(400, "No bar data returned")

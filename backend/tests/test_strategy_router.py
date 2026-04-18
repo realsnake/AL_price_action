@@ -28,13 +28,16 @@ async def test_get_signals_uses_analysis_bars_service(monkeypatch):
     ]
     captured = {}
 
-    async def fake_get_analysis_bars(symbol, timeframe, start, end=None, limit=1000):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         captured["bars_request"] = {
             "symbol": symbol,
             "timeframe": timeframe,
             "start": start,
             "end": end,
             "limit": limit,
+            "research_profile": research_profile,
         }
         return bars
 
@@ -57,6 +60,7 @@ async def test_get_signals_uses_analysis_bars_service(monkeypatch):
         start="2025-01-01",
         end="2025-01-31",
         limit=250,
+        research_profile="qqq_5m_phase1",
         params={"short_period": 10, "long_period": 30},
     )
 
@@ -73,6 +77,7 @@ async def test_get_signals_uses_analysis_bars_service(monkeypatch):
         "start": "2025-01-01",
         "end": "2025-01-31",
         "limit": 250,
+        "research_profile": "qqq_5m_phase1",
     }
     assert captured["strategy_request"] == {
         "name": "ma_crossover",
@@ -84,7 +89,9 @@ async def test_get_signals_uses_analysis_bars_service(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_signals_returns_400_when_no_bars(monkeypatch):
-    async def fake_get_analysis_bars(symbol, timeframe, start, end=None, limit=1000):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         return []
 
     monkeypatch.setattr(strategy_router, "get_analysis_bars", fake_get_analysis_bars)
