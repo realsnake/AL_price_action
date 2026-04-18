@@ -104,7 +104,6 @@ def run_backtest(
     session_bar_index = {}
     session_last_bar = set()
     session_counts = {}
-    session_signal_counts = {}
     for idx, bar in enumerate(bars):
         current_time = bar["time"]
         bar_list_idx[current_time] = idx
@@ -124,8 +123,6 @@ def run_backtest(
     for sig in sorted_signals:
         signal_time = sig.timestamp.isoformat()
         signal_by_time[signal_time] = sig
-        signal_day = session_day(signal_time)
-        session_signal_counts[signal_day] = session_signal_counts.get(signal_day, 0) + 1
 
     def close_position(exit_time: str, exit_price: float, exit_reason: str) -> None:
         nonlocal capital, position
@@ -205,10 +202,7 @@ def run_backtest(
                 if profile is not None:
                     if profile.long_only and sig.signal_type == SignalType.SELL:
                         continue
-                    if (
-                        session_signal_counts.get(session_day(current_time), 0) > 1
-                        and session_bar_index.get(current_time, 0) < profile.skip_opening_bars
-                    ):
+                    if session_bar_index.get(current_time, 0) < profile.skip_opening_bars:
                         continue
                     if (
                         profile.entry_cutoff is not None
