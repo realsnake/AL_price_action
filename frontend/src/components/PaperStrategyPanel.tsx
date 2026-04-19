@@ -201,6 +201,23 @@ export default function PaperStrategyPanel({
               {readiness.ready ? "READY" : "CHECK REQUIRED"}
             </span>
           </div>
+          <div className="mt-2 rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-xs text-slate-300">
+            Market session:{" "}
+            <span className={readiness.market_session === "open" ? "text-emerald-300" : "text-slate-200"}>
+              {readiness.market_session}
+            </span>
+            {readiness.market_session === "open" && readiness.current_session_close ? (
+              <span className="text-slate-400">
+                {" "}
+                · closes {formatTimestamp(readiness.current_session_close)}
+              </span>
+            ) : readiness.next_session_open ? (
+              <span className="text-slate-400">
+                {" "}
+                · next open {formatTimestamp(readiness.next_session_open)}
+              </span>
+            ) : null}
+          </div>
           <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
               Paper mode:{" "}

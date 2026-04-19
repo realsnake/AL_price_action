@@ -27,6 +27,7 @@ from services.trade_executor import (
     refresh_trade_statuses,
     remove_trade_listener,
 )
+from services.bars_cache import MARKET_TZ, SESSION_OPEN, _is_trading_day, _next_trading_day, _session_close_for
 from strategies.base import SignalType
 
 logger = logging.getLogger(__name__)
@@ -602,6 +603,7 @@ def get_phase1_paper_runner_readiness() -> dict:
     alpaca_configured = alpaca_client.is_configured()
     account_status = "unavailable"
     account_error: str | None = None
+    session = _market_session_snapshot()
 
     if alpaca_configured:
         try:
@@ -639,6 +641,10 @@ def get_phase1_paper_runner_readiness() -> dict:
         "market_stream_running": market_stream_running,
         "trade_updates_running": trade_updates_running,
         "runner_running": bool(_phase1_runner and _phase1_runner.running),
+        "market_session": session["market_session"],
+        "current_session_open": session["current_session_open"],
+        "current_session_close": session["current_session_close"],
+        "next_session_open": session["next_session_open"],
         "warnings": warnings,
     }
 
@@ -656,6 +662,45 @@ async def get_phase1_paper_runner_history(limit: int = 10) -> list[dict]:
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _market_session_snapshot() -> dict[str, str | None]:
+    now_utc = _now_utc()
+    now_local = now_utc.astimezone(MARKET_TZ)
+    today = now_local.date()
+
+    if _is_trading_day(today):
+        session_open = datetime.combine(today, SESSION_OPEN, tzinfo=MARKET_TZ)
+        session_close = _session_close_for(today)
+        if session_open <= now_local < session_close:
+            return {
+                "market_session": "open",
+                "current_session_open": session_open.astimezone(timezone.utc).isoformat(),
+                "current_session_close": session_close.astimezone(timezone.utc).isoformat(),
+                "next_session_open": datetime.combine(
+                    _next_trading_day(today),
+                    SESSION_OPEN,
+                    tzinfo=MARKET_TZ,
+                ).astimezone(timezone.utc).isoformat(),
+            }
+        if now_local < session_open:
+            return {
+                "market_session": "closed",
+                "current_session_open": None,
+                "current_session_close": None,
+                "next_session_open": session_open.astimezone(timezone.utc).isoformat(),
+            }
+
+    next_open_day = _next_trading_day(today) if _is_trading_day(today) else today
+    if not _is_trading_day(next_open_day):
+        next_open_day = _next_trading_day(next_open_day)
+    next_open = datetime.combine(next_open_day, SESSION_OPEN, tzinfo=MARKET_TZ)
+    return {
+        "market_session": "closed",
+        "current_session_open": None,
+        "current_session_close": None,
+        "next_session_open": next_open.astimezone(timezone.utc).isoformat(),
+    }
 
 
 def _five_min_slot_timestamp(timestamp: str) -> str:

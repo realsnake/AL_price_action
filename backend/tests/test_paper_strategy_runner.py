@@ -772,6 +772,11 @@ async def test_get_phase1_paper_runner_history_filters_to_strategy_symbol_and_li
 def test_get_phase1_paper_runner_readiness_reports_broker_and_stream_health(
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_now_utc",
+        lambda: datetime.fromisoformat("2026-04-20T14:00:00+00:00"),
+    )
     monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
     monkeypatch.setattr(
         paper_strategy_runner.alpaca_client,
@@ -800,6 +805,10 @@ def test_get_phase1_paper_runner_readiness_reports_broker_and_stream_health(
     assert readiness["paper_trading"] is True
     assert readiness["alpaca_configured"] is True
     assert readiness["account_status"] == "ok"
+    assert readiness["market_session"] == "open"
+    assert readiness["current_session_open"] == "2026-04-20T13:30:00+00:00"
+    assert readiness["current_session_close"] == "2026-04-20T20:00:00+00:00"
+    assert readiness["next_session_open"] == "2026-04-21T13:30:00+00:00"
     assert readiness["market_stream_running"] is True
     assert readiness["trade_updates_running"] is True
     assert readiness["warnings"] == []
@@ -808,6 +817,11 @@ def test_get_phase1_paper_runner_readiness_reports_broker_and_stream_health(
 def test_get_phase1_paper_runner_readiness_surfaces_configuration_warnings(
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_now_utc",
+        lambda: datetime.fromisoformat("2026-04-19T12:00:00+00:00"),
+    )
     monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", False)
     monkeypatch.setattr(
         paper_strategy_runner.alpaca_client,
@@ -829,5 +843,9 @@ def test_get_phase1_paper_runner_readiness_surfaces_configuration_warnings(
 
     assert readiness["ready"] is False
     assert readiness["account_status"] == "unavailable"
+    assert readiness["market_session"] == "closed"
+    assert readiness["current_session_open"] is None
+    assert readiness["current_session_close"] is None
+    assert readiness["next_session_open"] == "2026-04-20T13:30:00+00:00"
     assert "PAPER_TRADING is disabled" in readiness["warnings"]
     assert "Alpaca credentials are not configured" in readiness["warnings"]
