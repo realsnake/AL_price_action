@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from alpaca.data.enums import DataFeed
+from alpaca.data.historical import CryptoHistoricalDataClient
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
+from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
@@ -29,6 +32,7 @@ class AlpacaNotConfiguredError(RuntimeError):
 class AlpacaClient:
     def __init__(self):
         self._data_client: StockHistoricalDataClient | None = None
+        self._crypto_data_client: CryptoHistoricalDataClient | None = None
         self._trading_client: TradingClient | None = None
 
     def is_configured(self) -> bool:
@@ -46,6 +50,14 @@ class AlpacaClient:
             )
         return self._data_client
 
+    def _get_crypto_data_client(self) -> CryptoHistoricalDataClient:
+        self._ensure_configured()
+        if self._crypto_data_client is None:
+            self._crypto_data_client = CryptoHistoricalDataClient(
+                ALPACA_API_KEY, ALPACA_SECRET_KEY
+            )
+        return self._crypto_data_client
+
     def _get_trading_client(self) -> TradingClient:
         self._ensure_configured()
         if self._trading_client is None:
@@ -54,8 +66,46 @@ class AlpacaClient:
             )
         return self._trading_client
 
-    def get_bars(self, symbol: str, timeframe: str, start: str, end: str | None = None, limit: int = 200) -> list[dict]:
+    def is_crypto_symbol(self, symbol: str) -> bool:
+        return "/" in symbol.upper()
+
+    def _parse_datetime(self, value: str | None):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+    def get_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start: str,
+        end: str | None = None,
+        limit: int | None = 200,
+    ) -> list[dict]:
         tf = _timeframe_from_str(timeframe)
+        if self.is_crypto_symbol(symbol):
+            request = CryptoBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=tf,
+                start=self._parse_datetime(start),
+                end=self._parse_datetime(end),
+                limit=limit,
+            )
+            bars = self._get_crypto_data_client().get_crypto_bars(request)
+            result = []
+            for bar in bars[symbol]:
+                result.append({
+                    "time": bar.timestamp.isoformat(),
+                    "open": float(bar.open),
+                    "high": float(bar.high),
+                    "low": float(bar.low),
+                    "close": float(bar.close),
+                    "volume": int(bar.volume),
+                })
+            return result
+
         request = StockBarsRequest(
             symbol_or_symbols=symbol,
             timeframe=tf,

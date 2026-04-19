@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from services.alpaca_client import alpaca_client
 from services.bars_cache import get_bars_with_cache
 from services.research_profile import (
     filter_bars_for_research_profile,
@@ -19,11 +20,21 @@ async def get_analysis_bars(
     research_profile: str | None = None,
 ) -> list[dict]:
     profile = get_research_profile(research_profile)
-    bars = await get_bars_with_cache(
-        symbol=symbol.upper(),
-        timeframe=timeframe,
-        start=start,
-        end=end,
-        limit=limit,
-    )
+    normalized_symbol = symbol.upper()
+    if alpaca_client.is_crypto_symbol(normalized_symbol):
+        bars = alpaca_client.get_bars(
+            symbol=normalized_symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+    else:
+        bars = await get_bars_with_cache(
+            symbol=normalized_symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+            limit=limit,
+        )
     return filter_bars_for_research_profile(bars, profile)

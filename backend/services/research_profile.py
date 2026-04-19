@@ -31,6 +31,15 @@ def get_research_profile(name: str | None) -> ResearchProfile | None:
             entry_cutoff=time(14, 0),
             flatten_daily=True,
         )
+    if name == "btc_5m_sandbox":
+        return ResearchProfile(
+            name=name,
+            session="continuous",
+            long_only=True,
+            skip_opening_bars=0,
+            entry_cutoff=None,
+            flatten_daily=False,
+        )
     raise ValueError(f"Unknown research profile: {name}")
 
 
