@@ -6,14 +6,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
 from routers import market, trading, strategy, ws, backtest, paper_strategy
 from services.alpaca_client import alpaca_client
-from services import market_data
+from services import market_data, trade_updates
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     await market_data.start_stream()
+    await trade_updates.start_trade_updates_stream()
     yield
+    await trade_updates.stop_trade_updates_stream()
     await market_data.stop_stream()
 
 

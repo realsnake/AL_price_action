@@ -26,9 +26,21 @@ def client(monkeypatch):
     async def fake_stop_stream():
         return None
 
+    async def fake_start_trade_updates_stream():
+        return None
+
+    async def fake_stop_trade_updates_stream():
+        return None
+
     monkeypatch.setattr(main, "init_db", fake_init_db)
     monkeypatch.setattr(main.market_data, "start_stream", fake_start_stream)
     monkeypatch.setattr(main.market_data, "stop_stream", fake_stop_stream)
+    monkeypatch.setattr(
+        main.trade_updates, "start_trade_updates_stream", fake_start_trade_updates_stream
+    )
+    monkeypatch.setattr(
+        main.trade_updates, "stop_trade_updates_stream", fake_stop_trade_updates_stream
+    )
 
     with TestClient(main.app) as test_client:
         yield test_client

@@ -19,7 +19,13 @@ from services.research_profile import (
     market_time,
 )
 from services.strategy_engine import get_strategy
-from services.trade_executor import execute_order, get_trade_history, refresh_trade_statuses
+from services.trade_executor import (
+    add_trade_listener,
+    execute_order,
+    get_trade_history,
+    refresh_trade_statuses,
+    remove_trade_listener,
+)
 from strategies.base import SignalType
 
 logger = logging.getLogger(__name__)
@@ -88,6 +94,7 @@ class Phase1PaperRunner:
 
         await self._restore_broker_state()
         self.running = True
+        add_trade_listener(self._on_trade_update)
         await market_data.subscribe(self.config.symbol, self._on_live_bar)
         return self.status()
 
@@ -107,6 +114,7 @@ class Phase1PaperRunner:
             self.partial_slot_time = None
 
         await market_data.unsubscribe(self.config.symbol, self._on_live_bar)
+        remove_trade_listener(self._on_trade_update)
         return self.status()
 
     def status(self) -> dict:
@@ -369,6 +377,48 @@ class Phase1PaperRunner:
                 self.position = None
 
         self.pending_order = None
+
+    async def _on_trade_update(self, trade_info: dict) -> None:
+        if not self.running:
+            return
+        if trade_info.get("symbol") != self.config.symbol:
+            return
+        if trade_info.get("strategy") != self.config.strategy:
+            return
+
+        async with self.lock:
+            order_id = str(trade_info.get("alpaca_order_id") or "")
+            if self.pending_order is None or order_id != self.pending_order.alpaca_order_id:
+                return
+
+            status = str(trade_info.get("status") or "")
+            side = str(trade_info.get("side") or "")
+            price = float(trade_info.get("price") or 0.0)
+            qty = int(float(trade_info.get("qty") or 0))
+            reason = str(trade_info.get("reason") or "")
+            timestamp = str(
+                trade_info.get("timestamp") or datetime.now(timezone.utc).isoformat()
+            )
+
+            if status == "filled":
+                if side == "buy":
+                    self.position = LivePosition(
+                        quantity=qty,
+                        entry_price=price,
+                        stop_price=price * (1 - self.config.stop_loss_pct / 100.0),
+                        target_price=price * (1 + self.config.take_profit_pct / 100.0),
+                        entry_time=timestamp,
+                        reason=reason or self.pending_order.reason,
+                    )
+                elif side == "sell":
+                    self.position = None
+                self.pending_order = None
+                return
+
+            if status in {"canceled", "cancelled", "rejected", "expired"}:
+                self.pending_order = None
+                if side == "sell" and self.position is not None:
+                    self.last_error = f"Exit order {status}"
 
 
 _phase1_runner: Phase1PaperRunner | None = None

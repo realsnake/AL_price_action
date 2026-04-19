@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session
 from models import Trade
-from services.alpaca_client import alpaca_client
+from services.alpaca_client import AlpacaNotConfiguredError, alpaca_client
 
 logger = logging.getLogger(__name__)
 
@@ -165,3 +165,68 @@ async def execute_order(symbol: str, qty: int, side: str, strategy: str | None =
 async def get_trade_history(limit: int = 50) -> list[dict]:
     """Get recent trade history from the database."""
     return await refresh_trade_statuses(limit=limit)
+
+
+async def apply_trade_update(update) -> None:
+    order = getattr(update, "order", None)
+    if order is None:
+        return
+
+    order_id = str(getattr(order, "id", "") or "")
+    if not order_id:
+        return
+
+    status_value = getattr(getattr(order, "status", None), "value", None) or getattr(
+        order, "status", None
+    )
+    side_value = getattr(getattr(order, "side", None), "value", None) or getattr(
+        order, "side", None
+    )
+    order_snapshot = {
+        "id": order_id,
+        "symbol": getattr(order, "symbol", None),
+        "side": side_value,
+        "qty": getattr(order, "qty", None),
+        "filled_qty": getattr(order, "filled_qty", None) or getattr(update, "qty", None),
+        "filled_avg_price": getattr(order, "filled_avg_price", None) or getattr(
+            update, "price", None
+        ),
+        "status": status_value,
+    }
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Trade).where(Trade.alpaca_order_id == order_id)
+        )
+        trades = result.scalars().all()
+        if not trades:
+            return
+
+        changed = False
+        for trade in trades:
+            if _apply_order_snapshot(trade, order_snapshot):
+                changed = True
+
+        if changed:
+            await session.commit()
+
+        timestamp = getattr(update, "timestamp", None)
+        if timestamp is None:
+            timestamp = datetime.utcnow()
+
+        for trade in trades:
+            await _notify_trade(
+                {
+                    "type": "trade_update",
+                    "trade_id": trade.id,
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "qty": trade.quantity,
+                    "price": trade.price,
+                    "strategy": trade.strategy,
+                    "reason": trade.signal_reason,
+                    "status": trade.status,
+                    "alpaca_order_id": trade.alpaca_order_id,
+                    "timestamp": timestamp.isoformat(),
+                }
+            )

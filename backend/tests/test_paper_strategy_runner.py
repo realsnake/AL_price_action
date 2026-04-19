@@ -435,3 +435,100 @@ async def test_phase1_paper_runner_recovers_pending_entry_and_blocks_duplicate_s
 
     await paper_strategy_runner.stop_phase1_paper_runner(close_position=False)
     paper_strategy_runner.reset_phase1_paper_runner()
+
+
+@pytest.mark.asyncio
+async def test_phase1_paper_runner_consumes_trade_update_for_pending_entry(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    subscribed = {}
+
+    async def fake_get_analysis_bars(
+        symbol: str,
+        timeframe: str,
+        start: str,
+        end: str | None = None,
+        limit: int = 1000,
+        research_profile: str | None = None,
+    ) -> list[dict]:
+        return [
+            _bar("2025-01-06T14:30:00+00:00", 500.0, 500.4, 499.8, 500.2),
+            _bar("2025-01-06T14:35:00+00:00", 500.2, 500.8, 500.0, 500.6),
+            _bar("2025-01-06T14:40:00+00:00", 500.6, 501.0, 500.5, 500.9),
+        ]
+
+    async def fake_subscribe(symbol: str, callback):
+        subscribed["callback"] = callback
+
+    async def fake_unsubscribe(symbol: str, callback):
+        return None
+
+    async def fake_execute_order(
+        symbol: str,
+        qty: int,
+        side: str,
+        strategy: str | None = None,
+        reason: str | None = None,
+    ) -> dict:
+        return {
+            "status": "accepted",
+            "qty": qty,
+            "price": 0.0,
+            "alpaca_order_id": "ord-pending",
+        }
+
+    async def fake_get_trade_history(limit=50):
+        return []
+
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
+    monkeypatch.setattr(paper_strategy_runner, "get_analysis_bars", fake_get_analysis_bars)
+    monkeypatch.setattr(paper_strategy_runner.market_data, "subscribe", fake_subscribe)
+    monkeypatch.setattr(paper_strategy_runner.market_data, "unsubscribe", fake_unsubscribe)
+    monkeypatch.setattr(paper_strategy_runner, "execute_order", fake_execute_order)
+    monkeypatch.setattr(paper_strategy_runner, "get_trade_history", fake_get_trade_history)
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_positions", lambda: [])
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_orders", lambda status="open": [])
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "get_strategy",
+        lambda name, params=None: _SignalOnBarStrategy("2025-01-06T15:00:00+00:00"),
+    )
+
+    await paper_strategy_runner.start_phase1_paper_runner(fixed_quantity=25)
+    callback = subscribed["callback"]
+
+    for minute_bar in [
+        _bar("2025-01-06T15:00:00+00:00", 501.0, 501.2, 500.9, 501.1),
+        _bar("2025-01-06T15:01:00+00:00", 501.1, 501.3, 501.0, 501.2),
+        _bar("2025-01-06T15:02:00+00:00", 501.2, 501.4, 501.1, 501.3),
+        _bar("2025-01-06T15:03:00+00:00", 501.3, 501.5, 501.2, 501.4),
+        _bar("2025-01-06T15:04:00+00:00", 501.4, 501.6, 501.3, 501.5),
+        _bar("2025-01-06T15:05:00+00:00", 501.5, 501.7, 501.4, 501.55),
+    ]:
+        await callback("QQQ", minute_bar)
+
+    status = paper_strategy_runner.get_phase1_paper_runner_status()
+    assert status["pending_order"]["alpaca_order_id"] == "ord-pending"
+
+    await paper_strategy_runner._phase1_runner._on_trade_update(
+        {
+            "type": "trade_update",
+            "alpaca_order_id": "ord-pending",
+            "symbol": "QQQ",
+            "strategy": "brooks_small_pb_trend",
+            "status": "filled",
+            "side": "buy",
+            "qty": 25,
+            "price": 501.8,
+            "reason": "paper-entry",
+            "timestamp": "2025-01-06T15:05:03+00:00",
+        }
+    )
+
+    status = paper_strategy_runner.get_phase1_paper_runner_status()
+    assert status["pending_order"] is None
+    assert status["position"]["entry_price"] == 501.8
+    assert status["position"]["quantity"] == 25
+
+    await paper_strategy_runner.stop_phase1_paper_runner(close_position=False)
+    paper_strategy_runner.reset_phase1_paper_runner()

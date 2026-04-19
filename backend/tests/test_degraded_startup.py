@@ -24,7 +24,19 @@ def test_health_reports_degraded_without_credentials(monkeypatch):
     async def fake_init_db():
         return None
 
+    async def fake_start_trade_updates_stream():
+        return None
+
+    async def fake_stop_trade_updates_stream():
+        return None
+
     monkeypatch.setattr(main, "init_db", fake_init_db)
+    monkeypatch.setattr(
+        main.trade_updates, "start_trade_updates_stream", fake_start_trade_updates_stream
+    )
+    monkeypatch.setattr(
+        main.trade_updates, "stop_trade_updates_stream", fake_stop_trade_updates_stream
+    )
 
     with TestClient(main.app) as client:
         response = client.get("/api/health")
