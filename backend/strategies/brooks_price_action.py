@@ -74,6 +74,37 @@ def _ema(closes: list[float], period: int) -> list[float]:
     return result
 
 
+def _session_vwap(bars: list[dict]) -> list[float]:
+    result = [0.0] * len(bars)
+    pv = 0.0
+    volume = 0
+    current_day = None
+    for i, bar in enumerate(bars):
+        bar_day = bar["time"][:10]
+        if bar_day != current_day:
+            current_day = bar_day
+            pv = 0.0
+            volume = 0
+        typical_price = (bar["high"] + bar["low"] + bar["close"]) / 3
+        pv += typical_price * bar["volume"]
+        volume += bar["volume"]
+        result[i] = pv / volume if volume > 0 else bar["close"]
+    return result
+
+
+def _session_open(bars: list[dict]) -> list[float]:
+    result = [0.0] * len(bars)
+    current_day = None
+    open_price = 0.0
+    for i, bar in enumerate(bars):
+        bar_day = bar["time"][:10]
+        if bar_day != current_day:
+            current_day = bar_day
+            open_price = bar["open"]
+        result[i] = open_price
+    return result
+
+
 def _atr(bars: list[dict], period: int = 14) -> list[float]:
     """Average True Range."""
     result = [0.0] * len(bars)
@@ -304,6 +335,8 @@ class SmallPullbackTrendStrategy(BaseStrategy):
 
         closes = [b["close"] for b in bars]
         ema = _ema(closes, ema_p)
+        session_vwap = _session_vwap(bars)
+        session_open = _session_open(bars)
         signals = []
 
         for i in range(ema_p + min_tb, len(bars)):
@@ -321,7 +354,14 @@ class SmallPullbackTrendStrategy(BaseStrategy):
 
             if bull_above >= min_tb - 1 and all_above_ema:
                 # Small pullback: 1-2 bear bars then bull bar
-                if _is_bear(bars[i - 1]) and _is_bull(bars[i]) and bars[i]["close"] > bars[i - 1]["high"]:
+                if (
+                    _is_bear(bars[i - 1])
+                    and _is_bull(bars[i])
+                    and _is_strong(bars[i], 0.5)
+                    and bars[i]["close"] > session_open[i]
+                    and bars[i]["close"] >= session_vwap[i] * 1.001
+                    and bars[i]["close"] > bars[i - 1]["high"]
+                ):
                     signals.append(_make_signal(
                         symbol, SignalType.BUY, bars[i], qty,
                         f"Small PB Trend: buy dip in strong bull trend (never touched EMA)"
@@ -335,7 +375,14 @@ class SmallPullbackTrendStrategy(BaseStrategy):
             )
 
             if bear_below >= min_tb - 1 and all_below_ema:
-                if _is_bull(bars[i - 1]) and _is_bear(bars[i]) and bars[i]["close"] < bars[i - 1]["low"]:
+                if (
+                    _is_bull(bars[i - 1])
+                    and _is_bear(bars[i])
+                    and _is_strong(bars[i], 0.5)
+                    and bars[i]["close"] < session_open[i]
+                    and bars[i]["close"] <= session_vwap[i] * 0.999
+                    and bars[i]["close"] < bars[i - 1]["low"]
+                ):
                     signals.append(_make_signal(
                         symbol, SignalType.SELL, bars[i], qty,
                         f"Small PB Trend: sell rally in strong bear trend (never touched EMA)"
@@ -1718,14 +1765,14 @@ class BreakoutPullbackStrategy(BaseStrategy):
             bo, pb, entry = bars[i - 2], bars[i - 1], bars[i]
 
             if _is_bull(bo) and _is_strong(bo, 0.5) and bo["close"] > rh:
-                if pb["low"] >= rh * 0.995 and _is_bull(entry) and entry["close"] > pb["high"]:
+                if pb["low"] >= rh and _is_bull(entry) and entry["close"] > pb["high"]:
                     signals.append(_make_signal(
                         symbol, SignalType.BUY, entry, qty,
                         f"Bull BO pullback: held above {rh:.2f}"
                     ))
 
             if _is_bear(bo) and _is_strong(bo, 0.5) and bo["close"] < rl:
-                if pb["high"] <= rl * 1.005 and _is_bear(entry) and entry["close"] < pb["low"]:
+                if pb["high"] <= rl and _is_bear(entry) and entry["close"] < pb["low"]:
                     signals.append(_make_signal(
                         symbol, SignalType.SELL, entry, qty,
                         f"Bear BO pullback: held below {rl:.2f}"

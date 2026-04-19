@@ -93,6 +93,42 @@ export interface BacktestResult {
   equity_curve: { time: string; equity: number }[];
 }
 
+export interface PaperStrategyPosition {
+  quantity: number;
+  entry_price: number;
+  stop_price: number;
+  target_price: number;
+  entry_time: string;
+  reason: string;
+}
+
+export interface PaperStrategyPendingOrder {
+  alpaca_order_id: string;
+  side: string;
+  quantity: number;
+  status: string;
+  reason: string;
+}
+
+export interface PaperStrategyStatus {
+  running: boolean;
+  strategy: string;
+  symbol: string;
+  timeframe: Timeframe;
+  research_profile: ResearchProfile;
+  fixed_quantity: number;
+  stop_loss_pct: number;
+  take_profit_pct: number;
+  history_days: number;
+  params: Record<string, unknown> | null;
+  bar_count: number;
+  last_completed_bar_time: string | null;
+  orders_submitted: number;
+  position: PaperStrategyPosition | null;
+  pending_order: PaperStrategyPendingOrder | null;
+  last_error: string | null;
+}
+
 export type DataSource = "network" | "cache";
 
 export type WorkspaceMode =

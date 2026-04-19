@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
-from routers import market, trading, strategy, ws, backtest
+from routers import market, trading, strategy, ws, backtest, paper_strategy
 from services.alpaca_client import alpaca_client
 from services import market_data
 
@@ -32,6 +32,7 @@ app.include_router(trading.router)
 app.include_router(strategy.router)
 app.include_router(ws.router)
 app.include_router(backtest.router)
+app.include_router(paper_strategy.router)
 
 
 @app.get("/api/health")

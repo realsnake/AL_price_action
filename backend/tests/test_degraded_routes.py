@@ -138,7 +138,9 @@ def test_trading_routes_return_503_when_alpaca_unavailable(
 def test_strategy_signals_returns_503_when_analysis_bars_need_alpaca(
     client, monkeypatch
 ):
-    async def fake_get_analysis_bars(symbol, timeframe, start, end=None, limit=1000):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
     monkeypatch.setattr(strategy_router, "get_analysis_bars", fake_get_analysis_bars)
@@ -159,7 +161,9 @@ def test_strategy_signals_returns_503_when_analysis_bars_need_alpaca(
 
 
 def test_backtest_returns_503_when_analysis_bars_need_alpaca(client, monkeypatch):
-    async def fake_get_analysis_bars(symbol, timeframe, start, end=None, limit=1000):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
     monkeypatch.setattr(backtest_router, "get_analysis_bars", fake_get_analysis_bars)

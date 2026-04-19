@@ -8,6 +8,7 @@ import type {
   StrategyInfo,
   BacktestResult,
   ResearchProfile,
+  PaperStrategyStatus,
 } from "../types";
 
 const api = axios.create({ baseURL: "/api" });
@@ -101,5 +102,25 @@ export async function runBacktest(req: {
     ...rest,
     research_profile: researchProfile ?? research_profile,
   });
+  return data;
+}
+
+export async function getPhase1PaperStrategyStatus(): Promise<PaperStrategyStatus> {
+  const { data } = await api.get("/paper-strategy/phase1/status");
+  return data;
+}
+
+export async function startPhase1PaperStrategy(req?: {
+  fixed_quantity?: number;
+  stop_loss_pct?: number;
+  take_profit_pct?: number;
+  history_days?: number;
+}): Promise<PaperStrategyStatus> {
+  const { data } = await api.post("/paper-strategy/phase1/start", req ?? {});
+  return data;
+}
+
+export async function stopPhase1PaperStrategy(): Promise<PaperStrategyStatus> {
+  const { data } = await api.post("/paper-strategy/phase1/stop");
   return data;
 }

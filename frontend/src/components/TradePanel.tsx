@@ -1,4 +1,5 @@
 import { useState } from "react";
+import PaperStrategyPanel from "./PaperStrategyPanel";
 import { submitOrder } from "../services/api";
 import type { Account, Position } from "../types";
 
@@ -39,13 +40,18 @@ export default function TradePanel({
 
   return (
     <div className="space-y-4 rounded-2xl border border-white/10 bg-[#0b1524]/90 p-4 shadow-[0_18px_60px_-28px_rgba(15,23,42,0.95)]">
+      <PaperStrategyPanel
+        disabledReason={disabledReason}
+        onRunnerAction={onOrderPlaced}
+      />
+
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
             Execution
           </p>
           <h3 className="mt-2 text-sm font-semibold text-white">
-            Paper trading control
+            Manual order control
           </h3>
         </div>
         {statusLine && (

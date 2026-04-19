@@ -8,6 +8,16 @@ from services.research_profile import get_research_profile, market_time, session
 from strategies.base import Signal, SignalType
 
 
+def _apply_slippage(price: float, side: str, slippage_bps: float) -> float:
+    if slippage_bps <= 0:
+        return price
+    if side == "buy":
+        return price * (1 + slippage_bps / 10000.0)
+    if side == "sell":
+        return price * (1 - slippage_bps / 10000.0)
+    raise ValueError(f"Unknown slippage side: {side}")
+
+
 @dataclass(frozen=True)
 class TradeRecord:
     entry_time: str
@@ -79,6 +89,8 @@ def run_backtest(
     stop_loss_pct: float = 2.0,
     take_profit_pct: float = 4.0,
     risk_per_trade_pct: float = 2.0,
+    fixed_quantity: int | None = None,
+    slippage_bps: float = 0.0,
     symbol: str = "QQQ",
     timeframe: str = "1D",
     research_profile: str | None = None,
@@ -127,10 +139,13 @@ def run_backtest(
         if position is None:
             return
 
+        exit_side = "sell" if position["side"] == "long" else "buy"
+        filled_exit_price = _apply_slippage(exit_price, exit_side, slippage_bps)
+
         if position["side"] == "long":
-            pnl = (exit_price - position["entry_price"]) * position["qty"]
+            pnl = (filled_exit_price - position["entry_price"]) * position["qty"]
         else:
-            pnl = (position["entry_price"] - exit_price) * position["qty"]
+            pnl = (position["entry_price"] - filled_exit_price) * position["qty"]
 
         pnl_pct = pnl / (position["entry_price"] * position["qty"]) * 100
 
@@ -139,7 +154,7 @@ def run_backtest(
             exit_time=exit_time,
             side=position["side"],
             entry_price=position["entry_price"],
-            exit_price=exit_price,
+            exit_price=filled_exit_price,
             stop_loss=position["stop"],
             quantity=position["qty"],
             pnl=pnl,
@@ -197,16 +212,22 @@ def run_backtest(
                     ):
                         continue
 
-                entry_price = sig.price
-                if entry_price <= 0:
+                signal_price = sig.price
+                if signal_price <= 0:
                     continue
 
-                # Position sizing based on risk
-                risk_amount = capital * (risk_per_trade_pct / 100.0)
-                stop_distance = entry_price * (stop_loss_pct / 100.0)
-                if stop_distance <= 0:
-                    continue
-                qty = max(1, int(risk_amount / stop_distance))
+                entry_side = "buy" if sig.signal_type == SignalType.BUY else "sell"
+                entry_price = _apply_slippage(signal_price, entry_side, slippage_bps)
+
+                if fixed_quantity is not None:
+                    qty = fixed_quantity
+                else:
+                    # Position sizing based on risk
+                    risk_amount = capital * (risk_per_trade_pct / 100.0)
+                    stop_distance = entry_price * (stop_loss_pct / 100.0)
+                    if stop_distance <= 0:
+                        continue
+                    qty = max(1, int(risk_amount / stop_distance))
 
                 if sig.signal_type == SignalType.BUY:
                     stop = entry_price * (1 - stop_loss_pct / 100.0)

@@ -134,6 +134,25 @@ class AlpacaClient:
             "created_at": order.created_at.isoformat(),
         }
 
+    def get_order_by_id(self, order_id: str) -> dict:
+        order = self._get_trading_client().get_order_by_id(order_id)
+        return {
+            "id": str(order.id),
+            "client_order_id": order.client_order_id,
+            "symbol": order.symbol,
+            "side": order.side.value,
+            "qty": str(order.qty) if order.qty is not None else None,
+            "filled_qty": str(order.filled_qty) if order.filled_qty is not None else None,
+            "filled_avg_price": (
+                str(order.filled_avg_price)
+                if order.filled_avg_price is not None
+                else None
+            ),
+            "status": order.status.value,
+            "created_at": order.created_at.isoformat(),
+            "filled_at": order.filled_at.isoformat() if order.filled_at else None,
+        }
+
     def cancel_order(self, order_id: str):
         self._get_trading_client().cancel_order_by_id(order_id)
 

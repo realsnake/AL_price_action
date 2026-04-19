@@ -30,6 +30,8 @@ class BacktestRequest(BaseModel):
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 4.0
     risk_per_trade_pct: float = 2.0
+    fixed_quantity: Optional[int] = Field(None, ge=1)
+    slippage_bps: float = Field(0.0, ge=0.0)
 
 
 @router.post("/run")
@@ -58,6 +60,8 @@ async def run_backtest_api(req: BacktestRequest):
             stop_loss_pct=req.stop_loss_pct,
             take_profit_pct=req.take_profit_pct,
             risk_per_trade_pct=req.risk_per_trade_pct,
+            fixed_quantity=req.fixed_quantity,
+            slippage_bps=req.slippage_bps,
             symbol=symbol,
             timeframe=req.timeframe,
             research_profile=req.research_profile,

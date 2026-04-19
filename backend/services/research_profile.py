@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import time
+from datetime import timedelta
 from datetime import timezone
 
 from services.bars_cache import MARKET_TZ, SESSION_OPEN, _is_trading_day, _session_close_for
@@ -27,7 +28,7 @@ def get_research_profile(name: str | None) -> ResearchProfile | None:
             session="rth",
             long_only=True,
             skip_opening_bars=2,
-            entry_cutoff=time(15, 30),
+            entry_cutoff=time(14, 0),
             flatten_daily=True,
         )
     raise ValueError(f"Unknown research profile: {name}")
@@ -63,3 +64,12 @@ def _is_rth_bar(timestamp: str) -> bool:
 
 def is_rth_bar_timestamp(timestamp: str) -> bool:
     return _is_rth_bar(timestamp)
+
+
+def is_session_final_bar_timestamp(timestamp: str, timeframe_minutes: int = 5) -> bool:
+    local = market_time(timestamp)
+    if not _is_trading_day(local.date()):
+        return False
+    session_close = _session_close_for(local.date())
+    bar_end = local + timedelta(minutes=timeframe_minutes)
+    return local < session_close <= bar_end

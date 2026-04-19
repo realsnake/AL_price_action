@@ -77,6 +77,8 @@ async def test_run_backtest_uses_analysis_bars_service(monkeypatch):
         stop_loss_pct=2.0,
         take_profit_pct=4.0,
         risk_per_trade_pct=2.0,
+        fixed_quantity=25,
+        slippage_bps=1.5,
     )
 
     result = await backtest_router.run_backtest_api(req)
@@ -100,6 +102,8 @@ async def test_run_backtest_uses_analysis_bars_service(monkeypatch):
     assert captured["run_backtest"]["bars"] == bars
     assert captured["run_backtest"]["signals"] == ["BUY_SIGNAL"]
     assert captured["run_backtest"]["research_profile"] == "qqq_5m_phase1"
+    assert captured["run_backtest"]["fixed_quantity"] == 25
+    assert captured["run_backtest"]["slippage_bps"] == 1.5
 
 
 @pytest.mark.asyncio
