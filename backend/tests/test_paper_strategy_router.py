@@ -49,3 +49,23 @@ def test_get_phase1_paper_strategy_status(monkeypatch):
         "running": True,
         "strategy": "brooks_small_pb_trend",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_phase1_paper_strategy_history(monkeypatch):
+    captured = {}
+
+    async def fake_get_phase1_paper_runner_history(limit: int = 10):
+        captured["limit"] = limit
+        return [{"id": 1, "symbol": "QQQ"}]
+
+    monkeypatch.setattr(
+        paper_strategy_router,
+        "get_phase1_paper_runner_history",
+        fake_get_phase1_paper_runner_history,
+    )
+
+    result = await paper_strategy_router.get_phase1_paper_strategy_history(limit=7)
+
+    assert result == [{"id": 1, "symbol": "QQQ"}]
+    assert captured["limit"] == 7

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  getPhase1PaperStrategyHistory,
   getPhase1PaperStrategyStatus,
   startPhase1PaperStrategy,
   stopPhase1PaperStrategy,
 } from "../services/api";
-import type { PaperStrategyStatus } from "../types";
+import type { PaperStrategyStatus, TradeHistoryEntry } from "../types";
+import useWebSocket from "../hooks/useWebSocket";
 
 interface PaperStrategyPanelProps {
   disabledReason?: string | null;
@@ -16,14 +18,19 @@ export default function PaperStrategyPanel({
   onRunnerAction,
 }: PaperStrategyPanelProps) {
   const [status, setStatus] = useState<PaperStrategyStatus | null>(null);
+  const [recentTrades, setRecentTrades] = useState<TradeHistoryEntry[]>([]);
   const [fixedQuantity, setFixedQuantity] = useState(100);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const refreshStatus = async () => {
     try {
-      const next = await getPhase1PaperStrategyStatus();
+      const [next, history] = await Promise.all([
+        getPhase1PaperStrategyStatus(),
+        getPhase1PaperStrategyHistory(8),
+      ]);
       setStatus(next);
+      setRecentTrades(history);
       setFixedQuantity(next.fixed_quantity);
       setError("");
     } catch (e: unknown) {
@@ -31,6 +38,24 @@ export default function PaperStrategyPanel({
       setError(message);
     }
   };
+
+  useWebSocket({
+    url: "/ws/trades",
+    onMessage: (raw) => {
+      const msg = raw as {
+        type?: string;
+        symbol?: string;
+        strategy?: string | null;
+      };
+      if (
+        (msg.type === "trade" || msg.type === "trade_update") &&
+        msg.symbol === "QQQ" &&
+        msg.strategy === "brooks_small_pb_trend"
+      ) {
+        void refreshStatus();
+      }
+    },
+  });
 
   useEffect(() => {
     void refreshStatus();
@@ -80,6 +105,9 @@ export default function PaperStrategyPanel({
     }
   };
 
+  const formatTimestamp = (value: string | null) =>
+    value ? new Date(value).toLocaleString() : "n/a";
+
   return (
     <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4">
       <div className="flex items-start justify-between gap-3">
@@ -122,9 +150,7 @@ export default function PaperStrategyPanel({
         <div className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2">
           <p className="text-xs text-slate-500">Last completed 5m bar</p>
           <p className="mt-1 font-mono text-white">
-            {status?.last_completed_bar_time
-              ? new Date(status.last_completed_bar_time).toLocaleString()
-              : "n/a"}
+            {formatTimestamp(status?.last_completed_bar_time ?? null)}
           </p>
         </div>
         <div className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2">
@@ -135,7 +161,37 @@ export default function PaperStrategyPanel({
           <p className="text-xs text-slate-500">Orders submitted</p>
           <p className="mt-1 font-mono text-white">{status?.orders_submitted ?? 0}</p>
         </div>
+        <div className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2">
+          <p className="text-xs text-slate-500">Last live 1m bar</p>
+          <p className="mt-1 font-mono text-white">
+            {formatTimestamp(status?.last_live_bar_at ?? null)}
+          </p>
+        </div>
+        <div className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2">
+          <p className="text-xs text-slate-500">Last trade update</p>
+          <p className="mt-1 font-mono text-white">
+            {formatTimestamp(status?.last_trade_update_at ?? null)}
+          </p>
+        </div>
       </div>
+
+      {status?.warnings && status.warnings.length > 0 && (
+        <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] px-3 py-3 text-sm">
+          <p className="text-xs uppercase tracking-[0.22em] text-amber-300/70">
+            Runner warnings
+          </p>
+          <div className="mt-2 space-y-2">
+            {status.warnings.map((warning) => (
+              <p
+                key={warning}
+                className="rounded-lg border border-amber-300/10 bg-black/10 px-2.5 py-2 text-xs text-amber-100"
+              >
+                {warning}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {status?.position && (
         <div className="mt-3 rounded-xl border border-emerald-400/15 bg-emerald-400/[0.04] px-3 py-3 text-sm">
@@ -167,6 +223,74 @@ export default function PaperStrategyPanel({
           <p className="mt-2 text-xs text-slate-300">
             {status.pending_order.status} · {status.pending_order.reason}
           </p>
+          <p className="mt-1 text-[11px] text-slate-400">
+            Submitted {formatTimestamp(status.pending_order.submitted_at)}
+          </p>
+        </div>
+      )}
+
+      {status && status.recent_events.length > 0 && (
+        <div className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-3 text-sm">
+          <p className="text-xs uppercase tracking-[0.22em] text-slate-400">
+            Recent events
+          </p>
+          <div className="mt-2 max-h-56 space-y-2 overflow-auto">
+            {[...status.recent_events].slice().reverse().map((event) => (
+              <div
+                key={`${event.timestamp}-${event.type}-${event.message}`}
+                className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-cyan-200">
+                    {event.type.replaceAll("_", " ")}
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    {new Date(event.timestamp).toLocaleTimeString()}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-300">{event.message}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {recentTrades.length > 0 && (
+        <div className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-3 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs uppercase tracking-[0.22em] text-slate-400">
+              Recent phase1 trades
+            </p>
+            <span className="text-[11px] text-slate-500">{recentTrades.length} shown</span>
+          </div>
+          <div className="mt-2 space-y-2">
+            {recentTrades.map((trade) => (
+              <div
+                key={trade.id}
+                className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`text-[11px] font-medium uppercase tracking-[0.16em] ${
+                      trade.side === "buy" ? "text-emerald-300" : "text-rose-300"
+                    }`}
+                  >
+                    {trade.side} · {trade.status}
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    {formatTimestamp(trade.created_at)}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-3 text-xs text-slate-300">
+                  <span>{trade.quantity} shares</span>
+                  <span>${trade.price.toFixed(2)}</span>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {trade.signal_reason || "phase1 trade"}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

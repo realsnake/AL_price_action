@@ -206,3 +206,21 @@ async def test_apply_trade_update_updates_trade_and_notifies(monkeypatch):
     assert notifications[0]["type"] == "trade_update"
     assert notifications[0]["trade_id"] == 3
     assert notifications[0]["status"] == "filled"
+
+
+@pytest.mark.asyncio
+async def test_add_trade_listener_deduplicates_same_callback():
+    trade_executor._trade_listeners.clear()
+    notifications = []
+
+    async def listener(payload):
+        notifications.append(payload)
+
+    trade_executor.add_trade_listener(listener)
+    trade_executor.add_trade_listener(listener)
+
+    await trade_executor._notify_trade({"type": "trade", "symbol": "QQQ"})
+
+    assert len(notifications) == 1
+
+    trade_executor.remove_trade_listener(listener)

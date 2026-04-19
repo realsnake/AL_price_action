@@ -108,6 +108,26 @@ export interface PaperStrategyPendingOrder {
   quantity: number;
   status: string;
   reason: string;
+  submitted_at: string;
+}
+
+export interface PaperStrategyEvent {
+  timestamp: string;
+  type: string;
+  message: string;
+}
+
+export interface TradeHistoryEntry {
+  id: number;
+  symbol: string;
+  side: string;
+  quantity: number;
+  price: number;
+  strategy: string | null;
+  signal_reason: string | null;
+  status: string;
+  alpaca_order_id: string | null;
+  created_at: string | null;
 }
 
 export interface PaperStrategyStatus {
@@ -122,11 +142,16 @@ export interface PaperStrategyStatus {
   history_days: number;
   params: Record<string, unknown> | null;
   bar_count: number;
+  started_at: string | null;
   last_completed_bar_time: string | null;
+  last_live_bar_at: string | null;
+  last_trade_update_at: string | null;
   orders_submitted: number;
   position: PaperStrategyPosition | null;
   pending_order: PaperStrategyPendingOrder | null;
   last_error: string | null;
+  warnings: string[];
+  recent_events: PaperStrategyEvent[];
 }
 
 export type DataSource = "network" | "cache";

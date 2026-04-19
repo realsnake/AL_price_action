@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import logging
 from dataclasses import asdict
 from dataclasses import dataclass
@@ -61,6 +62,14 @@ class PendingOrder:
     quantity: int
     status: str
     reason: str
+    submitted_at: str
+
+
+@dataclass
+class RunnerEvent:
+    timestamp: str
+    type: str
+    message: str
 
 
 class Phase1PaperRunner:
@@ -75,8 +84,12 @@ class Phase1PaperRunner:
         self.running = False
         self.lock = asyncio.Lock()
         self.orders_submitted = 0
+        self.started_at: str | None = None
         self.last_completed_bar_time: str | None = None
+        self.last_live_bar_at: str | None = None
+        self.last_trade_update_at: str | None = None
         self.last_error: str | None = None
+        self.recent_events: deque[RunnerEvent] = deque(maxlen=40)
 
     async def start(self) -> dict:
         start_day = (
@@ -94,8 +107,13 @@ class Phase1PaperRunner:
 
         await self._restore_broker_state()
         self.running = True
+        self.started_at = _now_utc().isoformat()
         add_trade_listener(self._on_trade_update)
         await market_data.subscribe(self.config.symbol, self._on_live_bar)
+        self._record_event(
+            "runner_started",
+            f"Started {self.config.strategy} on {self.config.symbol} {self.config.timeframe}",
+        )
         return self.status()
 
     async def stop(self, close_position: bool = True) -> dict:
@@ -115,6 +133,7 @@ class Phase1PaperRunner:
 
         await market_data.unsubscribe(self.config.symbol, self._on_live_bar)
         remove_trade_listener(self._on_trade_update)
+        self._record_event("runner_stopped", "Phase1 paper runner stopped")
         return self.status()
 
     def status(self) -> dict:
@@ -130,16 +149,23 @@ class Phase1PaperRunner:
             "history_days": self.config.history_days,
             "params": self.config.params,
             "bar_count": len(self.bars),
+            "started_at": self.started_at,
             "last_completed_bar_time": self.last_completed_bar_time,
+            "last_live_bar_at": self.last_live_bar_at,
+            "last_trade_update_at": self.last_trade_update_at,
             "orders_submitted": self.orders_submitted,
             "position": None if self.position is None else asdict(self.position),
             "pending_order": None if self.pending_order is None else asdict(self.pending_order),
             "last_error": self.last_error,
+            "warnings": self._status_warnings(),
+            "recent_events": [asdict(event) for event in self.recent_events],
         }
 
     async def _on_live_bar(self, symbol: str, payload: dict) -> None:
         if not self.running or "time" not in payload:
             return
+
+        self.last_live_bar_at = payload["time"]
 
         async with self.lock:
             try:
@@ -147,6 +173,7 @@ class Phase1PaperRunner:
                 self.last_error = None
             except Exception as exc:
                 self.last_error = str(exc)
+                self._record_event("runner_error", str(exc))
                 logger.exception("Phase-1 paper runner failed on live bar")
 
     async def _ingest_live_bar(self, bar: dict) -> None:
@@ -223,6 +250,10 @@ class Phase1PaperRunner:
                 None,
             )
             if matching_signal is not None:
+                self._record_event(
+                    "signal_detected",
+                    f"Signal at {bar['time']} ({matching_signal.reason})",
+                )
                 await self._submit_entry(matching_signal.price, bar["time"], matching_signal.reason)
 
         if self.position is not None and is_session_final_bar_timestamp(bar["time"], 5):
@@ -241,6 +272,10 @@ class Phase1PaperRunner:
             reason=reason,
         )
         self.orders_submitted += 1
+        self._record_event(
+            "order_submitted",
+            f"Submitted buy {self.config.fixed_quantity} ({reason})",
+        )
         if trade_info.get("status") == "filled":
             filled_price = float(trade_info.get("price") or entry_price)
             self.position = LivePosition(
@@ -251,6 +286,10 @@ class Phase1PaperRunner:
                 entry_time=entry_time,
                 reason=reason,
             )
+            self._record_event(
+                "position_opened",
+                f"Opened {self.position.quantity} @ {filled_price:.2f}",
+            )
             return
 
         self.pending_order = PendingOrder(
@@ -259,6 +298,7 @@ class Phase1PaperRunner:
             quantity=int(trade_info.get("qty") or self.config.fixed_quantity),
             status=str(trade_info.get("status") or "submitted"),
             reason=reason,
+            submitted_at=_now_utc().isoformat(),
         )
 
     async def _submit_exit(self, exit_price: float, exit_time: str, reason: str) -> None:
@@ -273,8 +313,13 @@ class Phase1PaperRunner:
             reason=reason,
         )
         self.orders_submitted += 1
+        self._record_event(
+            "order_submitted",
+            f"Submitted sell {self.position.quantity} ({reason})",
+        )
         if trade_info.get("status") == "filled":
             self.position = None
+            self._record_event("position_closed", f"Closed position via {reason}")
             return
 
         self.pending_order = PendingOrder(
@@ -283,6 +328,7 @@ class Phase1PaperRunner:
             quantity=int(trade_info.get("qty") or self.position.quantity),
             status=str(trade_info.get("status") or "submitted"),
             reason=reason,
+            submitted_at=_now_utc().isoformat(),
         )
 
     async def _restore_broker_state(self) -> None:
@@ -315,6 +361,15 @@ class Phase1PaperRunner:
                 quantity=int(float(pending_order["qty"])),
                 status=str(pending_order["status"]),
                 reason=str(recovered_pending.get("signal_reason") or recovered_pending["side"]),
+                submitted_at=str(
+                    recovered_pending.get("created_at")
+                    or pending_order.get("created_at")
+                    or _now_utc().isoformat()
+                ),
+            )
+            self._record_event(
+                "pending_order_recovered",
+                f"Recovered {self.pending_order.side} order {self.pending_order.alpaca_order_id}",
             )
 
         broker_position = next(
@@ -346,6 +401,10 @@ class Phase1PaperRunner:
             ),
             reason=str((recent_buy or {}).get("signal_reason") or "recovered_broker_position"),
         )
+        self._record_event(
+            "position_recovered",
+            f"Recovered {quantity} shares @ {entry_price:.2f}",
+        )
         if self.pending_order is not None and self.pending_order.side == "buy":
             self.pending_order = None
 
@@ -373,8 +432,13 @@ class Phase1PaperRunner:
                     entry_time=str(order.get("filled_at") or order.get("created_at") or datetime.now(timezone.utc).isoformat()),
                     reason=self.pending_order.reason,
                 )
+                self._record_event(
+                    "position_opened",
+                    f"Opened {quantity} @ {entry_price:.2f}",
+                )
             else:
                 self.position = None
+                self._record_event("position_closed", "Closed position from broker refresh")
 
         self.pending_order = None
 
@@ -396,9 +460,8 @@ class Phase1PaperRunner:
             price = float(trade_info.get("price") or 0.0)
             qty = int(float(trade_info.get("qty") or 0))
             reason = str(trade_info.get("reason") or "")
-            timestamp = str(
-                trade_info.get("timestamp") or datetime.now(timezone.utc).isoformat()
-            )
+            timestamp = str(trade_info.get("timestamp") or _now_utc().isoformat())
+            self.last_trade_update_at = timestamp
 
             if status == "filled":
                 if side == "buy":
@@ -410,15 +473,56 @@ class Phase1PaperRunner:
                         entry_time=timestamp,
                         reason=reason or self.pending_order.reason,
                     )
+                    self._record_event(
+                        "position_opened",
+                        f"Opened {qty} @ {price:.2f}",
+                    )
                 elif side == "sell":
                     self.position = None
+                    self._record_event("position_closed", "Closed position from trade update")
                 self.pending_order = None
                 return
 
             if status in {"canceled", "cancelled", "rejected", "expired"}:
+                self._record_event(
+                    "order_update",
+                    f"{side} order {status}",
+                )
                 self.pending_order = None
                 if side == "sell" and self.position is not None:
                     self.last_error = f"Exit order {status}"
+
+    def _record_event(self, event_type: str, message: str) -> None:
+        self.recent_events.append(
+            RunnerEvent(
+                timestamp=_now_utc().isoformat(),
+                type=event_type,
+                message=message,
+            )
+        )
+
+    def _status_warnings(self) -> list[str]:
+        warnings: list[str] = []
+        now = _now_utc()
+
+        live_reference = self.last_live_bar_at or self.started_at
+        if self.running and live_reference and is_rth_bar_timestamp(now.isoformat()):
+            live_dt = datetime.fromisoformat(live_reference)
+            live_age_seconds = max(0, int((now - live_dt).total_seconds()))
+            if live_age_seconds >= 120:
+                warnings.append(
+                    f"No live 1m bars observed for {live_age_seconds}s during RTH"
+                )
+
+        if self.pending_order is not None:
+            submitted_at = datetime.fromisoformat(self.pending_order.submitted_at)
+            pending_age_seconds = max(0, int((now - submitted_at).total_seconds()))
+            if pending_age_seconds >= 90:
+                warnings.append(
+                    f"Pending {self.pending_order.side} order open for {pending_age_seconds}s"
+                )
+
+        return warnings
 
 
 _phase1_runner: Phase1PaperRunner | None = None
@@ -427,6 +531,32 @@ _phase1_runner: Phase1PaperRunner | None = None
 def reset_phase1_paper_runner() -> None:
     global _phase1_runner
     _phase1_runner = None
+
+
+def _empty_runner_status() -> dict:
+    return {
+        "running": False,
+        "strategy": "brooks_small_pb_trend",
+        "symbol": "QQQ",
+        "timeframe": "5m",
+        "research_profile": "qqq_5m_phase1",
+        "fixed_quantity": 100,
+        "stop_loss_pct": 2.0,
+        "take_profit_pct": 4.0,
+        "history_days": 10,
+        "params": None,
+        "bar_count": 0,
+        "started_at": None,
+        "last_completed_bar_time": None,
+        "last_live_bar_at": None,
+        "last_trade_update_at": None,
+        "orders_submitted": 0,
+        "position": None,
+        "pending_order": None,
+        "last_error": None,
+        "warnings": [],
+        "recent_events": [],
+    }
 
 
 async def start_phase1_paper_runner(
@@ -458,43 +588,29 @@ async def start_phase1_paper_runner(
 
 async def stop_phase1_paper_runner(close_position: bool = True) -> dict:
     if _phase1_runner is None:
-        return {
-            "running": False,
-            "strategy": "brooks_small_pb_trend",
-            "symbol": "QQQ",
-            "timeframe": "5m",
-            "research_profile": "qqq_5m_phase1",
-            "position": None,
-            "orders_submitted": 0,
-            "bar_count": 0,
-            "last_completed_bar_time": None,
-            "pending_order": None,
-            "last_error": None,
-        }
+        return _empty_runner_status()
     return await _phase1_runner.stop(close_position=close_position)
 
 
 def get_phase1_paper_runner_status() -> dict:
     if _phase1_runner is None:
-        return {
-            "running": False,
-            "strategy": "brooks_small_pb_trend",
-            "symbol": "QQQ",
-            "timeframe": "5m",
-            "research_profile": "qqq_5m_phase1",
-            "fixed_quantity": 100,
-            "stop_loss_pct": 2.0,
-            "take_profit_pct": 4.0,
-            "history_days": 10,
-            "params": None,
-            "bar_count": 0,
-            "last_completed_bar_time": None,
-            "orders_submitted": 0,
-            "position": None,
-            "pending_order": None,
-            "last_error": None,
-        }
+        return _empty_runner_status()
     return _phase1_runner.status()
+
+
+async def get_phase1_paper_runner_history(limit: int = 10) -> list[dict]:
+    history = await get_trade_history(limit=max(limit * 5, limit))
+    filtered = [
+        trade
+        for trade in history
+        if trade.get("symbol") == "QQQ"
+        and trade.get("strategy") == "brooks_small_pb_trend"
+    ]
+    return filtered[:limit]
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _five_min_slot_timestamp(timestamp: str) -> str:

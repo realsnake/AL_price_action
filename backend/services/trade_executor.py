@@ -18,7 +18,8 @@ _trade_listeners: list = []
 
 
 def add_trade_listener(callback):
-    _trade_listeners.append(callback)
+    if callback not in _trade_listeners:
+        _trade_listeners.append(callback)
 
 
 def remove_trade_listener(callback):

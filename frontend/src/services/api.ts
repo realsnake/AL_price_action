@@ -9,6 +9,7 @@ import type {
   BacktestResult,
   ResearchProfile,
   PaperStrategyStatus,
+  TradeHistoryEntry,
 } from "../types";
 
 const api = axios.create({ baseURL: "/api" });
@@ -107,6 +108,15 @@ export async function runBacktest(req: {
 
 export async function getPhase1PaperStrategyStatus(): Promise<PaperStrategyStatus> {
   const { data } = await api.get("/paper-strategy/phase1/status");
+  return data;
+}
+
+export async function getPhase1PaperStrategyHistory(
+  limit = 10,
+): Promise<TradeHistoryEntry[]> {
+  const { data } = await api.get("/paper-strategy/phase1/history", {
+    params: { limit },
+  });
   return data;
 }
 

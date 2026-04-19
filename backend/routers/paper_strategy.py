@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from services.alpaca_client import AlpacaNotConfiguredError
 from services.paper_strategy_runner import (
+    get_phase1_paper_runner_history,
     get_phase1_paper_runner_status,
     start_phase1_paper_runner,
     stop_phase1_paper_runner,
@@ -26,6 +27,11 @@ class StartPhase1PaperRequest(BaseModel):
 @router.get("/phase1/status")
 def get_phase1_paper_strategy_status():
     return get_phase1_paper_runner_status()
+
+
+@router.get("/phase1/history")
+async def get_phase1_paper_strategy_history(limit: int = 10):
+    return await get_phase1_paper_runner_history(limit=limit)
 
 
 @router.post("/phase1/start")
