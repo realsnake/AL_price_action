@@ -19,6 +19,10 @@ def is_trade_updates_enabled() -> bool:
     return alpaca_client.is_configured()
 
 
+def is_trade_updates_running() -> bool:
+    return _trade_stream_task is not None and not _trade_stream_task.done()
+
+
 def _get_trade_stream() -> TradingStream:
     global _trade_stream
     if not is_trade_updates_enabled():

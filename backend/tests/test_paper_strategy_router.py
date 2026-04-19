@@ -69,3 +69,16 @@ async def test_get_phase1_paper_strategy_history(monkeypatch):
 
     assert result == [{"id": 1, "symbol": "QQQ"}]
     assert captured["limit"] == 7
+
+
+def test_get_phase1_paper_strategy_readiness(monkeypatch):
+    monkeypatch.setattr(
+        paper_strategy_router,
+        "get_phase1_paper_runner_readiness",
+        lambda: {"ready": True, "account_status": "ok"},
+    )
+
+    assert paper_strategy_router.get_phase1_paper_strategy_readiness() == {
+        "ready": True,
+        "account_status": "ok",
+    }

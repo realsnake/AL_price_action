@@ -11,7 +11,7 @@ from datetime import timezone
 from typing import Any
 
 from config import PAPER_TRADING
-from services import market_data
+from services import market_data, trade_updates
 from services.alpaca_client import alpaca_client
 from services.analysis_bars import get_analysis_bars
 from services.research_profile import (
@@ -596,6 +596,51 @@ def get_phase1_paper_runner_status() -> dict:
     if _phase1_runner is None:
         return _empty_runner_status()
     return _phase1_runner.status()
+
+
+def get_phase1_paper_runner_readiness() -> dict:
+    alpaca_configured = alpaca_client.is_configured()
+    account_status = "unavailable"
+    account_error: str | None = None
+
+    if alpaca_configured:
+        try:
+            alpaca_client.get_account()
+            account_status = "ok"
+        except Exception as exc:
+            account_status = "error"
+            account_error = str(exc)
+
+    market_stream_running = market_data.is_stream_running()
+    trade_updates_running = trade_updates.is_trade_updates_running()
+
+    warnings: list[str] = []
+    if not PAPER_TRADING:
+        warnings.append("PAPER_TRADING is disabled")
+    if not alpaca_configured:
+        warnings.append("Alpaca credentials are not configured")
+    if alpaca_configured and account_status != "ok":
+        warnings.append("Alpaca account access failed")
+    if alpaca_configured and not market_stream_running:
+        warnings.append("Market data stream is not running")
+    if alpaca_configured and not trade_updates_running:
+        warnings.append("Trade updates stream is not running")
+
+    return {
+        "ready": PAPER_TRADING
+        and alpaca_configured
+        and account_status == "ok"
+        and market_stream_running
+        and trade_updates_running,
+        "paper_trading": PAPER_TRADING,
+        "alpaca_configured": alpaca_configured,
+        "account_status": account_status,
+        "account_error": account_error,
+        "market_stream_running": market_stream_running,
+        "trade_updates_running": trade_updates_running,
+        "runner_running": bool(_phase1_runner and _phase1_runner.running),
+        "warnings": warnings,
+    }
 
 
 async def get_phase1_paper_runner_history(limit: int = 10) -> list[dict]:

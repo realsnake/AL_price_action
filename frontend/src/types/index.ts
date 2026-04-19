@@ -130,6 +130,18 @@ export interface TradeHistoryEntry {
   created_at: string | null;
 }
 
+export interface PaperStrategyReadiness {
+  ready: boolean;
+  paper_trading: boolean;
+  alpaca_configured: boolean;
+  account_status: "ok" | "error" | "unavailable";
+  account_error: string | null;
+  market_stream_running: boolean;
+  trade_updates_running: boolean;
+  runner_running: boolean;
+  warnings: string[];
+}
+
 export interface PaperStrategyStatus {
   running: boolean;
   strategy: string;

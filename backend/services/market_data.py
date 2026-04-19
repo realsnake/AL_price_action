@@ -20,6 +20,10 @@ def is_live_stream_enabled() -> bool:
     return alpaca_client.is_configured()
 
 
+def is_stream_running() -> bool:
+    return _stream_task is not None and not _stream_task.done()
+
+
 async def _on_bar(bar):
     """Handle incoming bar from Alpaca WebSocket."""
     symbol = bar.symbol

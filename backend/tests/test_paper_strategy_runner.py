@@ -767,3 +767,67 @@ async def test_get_phase1_paper_runner_history_filters_to_strategy_symbol_and_li
     history = await paper_strategy_runner.get_phase1_paper_runner_history(limit=3)
 
     assert [trade["id"] for trade in history] == [4, 2, 1]
+
+
+def test_get_phase1_paper_runner_readiness_reports_broker_and_stream_health(
+    monkeypatch,
+):
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
+    monkeypatch.setattr(
+        paper_strategy_runner.alpaca_client,
+        "is_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner.alpaca_client,
+        "get_account",
+        lambda: {"equity": 100000.0},
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner.market_data,
+        "is_stream_running",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner.trade_updates,
+        "is_trade_updates_running",
+        lambda: True,
+    )
+
+    readiness = paper_strategy_runner.get_phase1_paper_runner_readiness()
+
+    assert readiness["ready"] is True
+    assert readiness["paper_trading"] is True
+    assert readiness["alpaca_configured"] is True
+    assert readiness["account_status"] == "ok"
+    assert readiness["market_stream_running"] is True
+    assert readiness["trade_updates_running"] is True
+    assert readiness["warnings"] == []
+
+
+def test_get_phase1_paper_runner_readiness_surfaces_configuration_warnings(
+    monkeypatch,
+):
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", False)
+    monkeypatch.setattr(
+        paper_strategy_runner.alpaca_client,
+        "is_configured",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner.market_data,
+        "is_stream_running",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner.trade_updates,
+        "is_trade_updates_running",
+        lambda: False,
+    )
+
+    readiness = paper_strategy_runner.get_phase1_paper_runner_readiness()
+
+    assert readiness["ready"] is False
+    assert readiness["account_status"] == "unavailable"
+    assert "PAPER_TRADING is disabled" in readiness["warnings"]
+    assert "Alpaca credentials are not configured" in readiness["warnings"]

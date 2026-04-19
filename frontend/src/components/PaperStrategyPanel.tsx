@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getPhase1PaperStrategyHistory,
+  getPhase1PaperStrategyReadiness,
   getPhase1PaperStrategyStatus,
   startPhase1PaperStrategy,
   stopPhase1PaperStrategy,
 } from "../services/api";
-import type { PaperStrategyStatus, TradeHistoryEntry } from "../types";
+import type {
+  PaperStrategyReadiness,
+  PaperStrategyStatus,
+  TradeHistoryEntry,
+} from "../types";
 import useWebSocket from "../hooks/useWebSocket";
 
 interface PaperStrategyPanelProps {
@@ -18,6 +23,7 @@ export default function PaperStrategyPanel({
   onRunnerAction,
 }: PaperStrategyPanelProps) {
   const [status, setStatus] = useState<PaperStrategyStatus | null>(null);
+  const [readiness, setReadiness] = useState<PaperStrategyReadiness | null>(null);
   const [recentTrades, setRecentTrades] = useState<TradeHistoryEntry[]>([]);
   const [fixedQuantity, setFixedQuantity] = useState(100);
   const [loading, setLoading] = useState(false);
@@ -25,12 +31,14 @@ export default function PaperStrategyPanel({
 
   const refreshStatus = async () => {
     try {
-      const [next, history] = await Promise.all([
+      const [next, history, readinessInfo] = await Promise.all([
         getPhase1PaperStrategyStatus(),
         getPhase1PaperStrategyHistory(8),
+        getPhase1PaperStrategyReadiness(),
       ]);
       setStatus(next);
       setRecentTrades(history);
+      setReadiness(readinessInfo);
       setFixedQuantity(next.fixed_quantity);
       setError("");
     } catch (e: unknown) {
@@ -81,6 +89,7 @@ export default function PaperStrategyPanel({
     try {
       const next = await startPhase1PaperStrategy({ fixed_quantity: fixedQuantity });
       setStatus(next);
+      void refreshStatus();
       onRunnerAction?.();
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Failed to start paper strategy";
@@ -96,6 +105,7 @@ export default function PaperStrategyPanel({
     try {
       const next = await stopPhase1PaperStrategy();
       setStatus(next);
+      void refreshStatus();
       onRunnerAction?.();
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Failed to stop paper strategy";
@@ -174,6 +184,78 @@ export default function PaperStrategyPanel({
           </p>
         </div>
       </div>
+
+      {readiness && (
+        <div className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-3 text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs uppercase tracking-[0.22em] text-slate-400">
+              Phase1 preflight
+            </p>
+            <span
+              className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                readiness.ready
+                  ? "bg-emerald-500/15 text-emerald-300"
+                  : "bg-amber-500/15 text-amber-300"
+              }`}
+            >
+              {readiness.ready ? "READY" : "CHECK REQUIRED"}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
+              Paper mode:{" "}
+              <span className={readiness.paper_trading ? "text-emerald-300" : "text-amber-300"}>
+                {readiness.paper_trading ? "on" : "off"}
+              </span>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
+              Alpaca:{" "}
+              <span className={readiness.alpaca_configured ? "text-emerald-300" : "text-amber-300"}>
+                {readiness.alpaca_configured ? "configured" : "missing creds"}
+              </span>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
+              Account:{" "}
+              <span className={readiness.account_status === "ok" ? "text-emerald-300" : "text-amber-300"}>
+                {readiness.account_status}
+              </span>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
+              Market stream:{" "}
+              <span className={readiness.market_stream_running ? "text-emerald-300" : "text-amber-300"}>
+                {readiness.market_stream_running ? "running" : "stopped"}
+              </span>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
+              Trade updates:{" "}
+              <span className={readiness.trade_updates_running ? "text-emerald-300" : "text-amber-300"}>
+                {readiness.trade_updates_running ? "running" : "stopped"}
+              </span>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
+              Runner:{" "}
+              <span className={readiness.runner_running ? "text-cyan-300" : "text-slate-300"}>
+                {readiness.runner_running ? "active" : "idle"}
+              </span>
+            </div>
+          </div>
+          {readiness.account_error && (
+            <p className="mt-2 text-xs text-amber-300">{readiness.account_error}</p>
+          )}
+          {readiness.warnings.length > 0 && (
+            <div className="mt-2 space-y-2">
+              {readiness.warnings.map((warning) => (
+                <p
+                  key={warning}
+                  className="rounded-lg border border-amber-300/10 bg-amber-400/[0.05] px-2.5 py-2 text-xs text-amber-100"
+                >
+                  {warning}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {status?.warnings && status.warnings.length > 0 && (
         <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] px-3 py-3 text-sm">

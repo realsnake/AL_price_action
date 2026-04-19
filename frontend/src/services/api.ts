@@ -10,6 +10,7 @@ import type {
   ResearchProfile,
   PaperStrategyStatus,
   TradeHistoryEntry,
+  PaperStrategyReadiness,
 } from "../types";
 
 const api = axios.create({ baseURL: "/api" });
@@ -117,6 +118,11 @@ export async function getPhase1PaperStrategyHistory(
   const { data } = await api.get("/paper-strategy/phase1/history", {
     params: { limit },
   });
+  return data;
+}
+
+export async function getPhase1PaperStrategyReadiness(): Promise<PaperStrategyReadiness> {
+  const { data } = await api.get("/paper-strategy/phase1/readiness");
   return data;
 }
 
