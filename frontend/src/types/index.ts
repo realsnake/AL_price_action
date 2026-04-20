@@ -63,11 +63,14 @@ export interface BacktestTrade {
   entry_price: number;
   exit_price: number;
   stop_loss: number;
+  target_price: number | null;
   quantity: number;
   pnl: number;
   pnl_pct: number;
   reason: string;
   exit_reason: string;
+  stop_reason: string;
+  target_reason: string | null;
 }
 
 export interface BacktestResult {
@@ -97,9 +100,11 @@ export interface PaperStrategyPosition {
   quantity: number;
   entry_price: number;
   stop_price: number;
-  target_price: number;
+  target_price: number | null;
   entry_time: string;
   reason: string;
+  stop_reason: string;
+  target_reason: string | null;
 }
 
 export interface PaperStrategyPendingOrder {
@@ -109,6 +114,7 @@ export interface PaperStrategyPendingOrder {
   status: string;
   reason: string;
   submitted_at: string;
+  signal_time: string;
 }
 
 export interface PaperStrategyEvent {

@@ -129,7 +129,7 @@ export default function PaperStrategyPanel({
             QQQ 5m phase1 runner
           </h3>
           <p className="mt-1 text-xs text-slate-400">
-            brooks_small_pb_trend · qqq_5m_phase1 · 2% stop · 4% target
+            brooks_small_pb_trend · qqq_5m_phase1 · 结构止损 · 1R 后跌破已确认回调低点并收回 EMA20 下方动态离场
           </p>
         </div>
         <span
@@ -301,7 +301,11 @@ export default function PaperStrategyPanel({
             <span>{status.position.quantity} shares</span>
             <span>Entry ${status.position.entry_price.toFixed(2)}</span>
             <span>Stop ${status.position.stop_price.toFixed(2)}</span>
-            <span>Target ${status.position.target_price.toFixed(2)}</span>
+            <span>
+              {status.position.target_price == null
+                ? "无固定止盈"
+                : `目标 $${status.position.target_price.toFixed(2)}`}
+            </span>
           </div>
           <p className="mt-2 text-xs text-slate-300">{status.position.reason}</p>
         </div>

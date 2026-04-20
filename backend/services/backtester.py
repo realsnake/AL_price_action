@@ -4,6 +4,11 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from services.phase1_exit import (
+    build_dynamic_exit_decision,
+    build_exit_plan,
+    compute_ema_series,
+)
 from services.research_profile import get_research_profile, market_time, session_day
 from strategies.base import Signal, SignalType
 
@@ -26,11 +31,14 @@ class TradeRecord:
     entry_price: float
     exit_price: float
     stop_loss: float
+    target_price: float | None
     quantity: int
     pnl: float
     pnl_pct: float
     reason: str
     exit_reason: str
+    stop_reason: str
+    target_reason: str | None
 
 
 @dataclass
@@ -126,6 +134,7 @@ def run_backtest(
 
     # Track open position
     position = None  # {side, entry_price, stop, target, qty, entry_time, reason}
+    ema_values = compute_ema_series(bars, 20)
 
     # Sort signals by time
     sorted_signals = sorted(signals, key=lambda s: s.timestamp)
@@ -156,11 +165,14 @@ def run_backtest(
             entry_price=position["entry_price"],
             exit_price=filled_exit_price,
             stop_loss=position["stop"],
+            target_price=position["target"],
             quantity=position["qty"],
             pnl=pnl,
             pnl_pct=pnl_pct,
             reason=position["reason"],
             exit_reason=exit_reason,
+            stop_reason=position["stop_reason"],
+            target_reason=position["target_reason"],
         ))
         capital += pnl
         position = None
@@ -173,19 +185,32 @@ def run_backtest(
         if position is not None:
             hit_stop = False
             hit_target = False
+            dynamic_exit = None
 
             if position["side"] == "long":
                 if bar["low"] <= position["stop"]:
                     hit_stop = True
                     exit_price = position["stop"]
-                elif bar["high"] >= position["target"]:
+                elif position["target"] is not None and bar["high"] >= position["target"]:
                     hit_target = True
                     exit_price = position["target"]
+                else:
+                    dynamic_exit = build_dynamic_exit_decision(
+                        strategy_name=strategy_name,
+                        research_profile=research_profile,
+                        bars=bars,
+                        bar_index=i,
+                        ema_values=ema_values,
+                        side=position["side"],
+                        entry_price=position["entry_price"],
+                        stop_price=position["stop"],
+                        max_favorable_price=position["max_favorable_price"],
+                    )
             else:  # short
                 if bar["high"] >= position["stop"]:
                     hit_stop = True
                     exit_price = position["stop"]
-                elif bar["low"] <= position["target"]:
+                elif position["target"] is not None and bar["low"] <= position["target"]:
                     hit_target = True
                     exit_price = position["target"]
 
@@ -194,6 +219,17 @@ def run_backtest(
                     exit_time=current_time,
                     exit_price=exit_price,
                     exit_reason="stop_loss" if hit_stop else "take_profit",
+                )
+            elif dynamic_exit is not None:
+                close_position(
+                    exit_time=current_time,
+                    exit_price=dynamic_exit.exit_price,
+                    exit_reason=dynamic_exit.reason,
+                )
+            elif position is not None and position["side"] == "long":
+                position["max_favorable_price"] = max(
+                    position["max_favorable_price"],
+                    float(bar["high"]),
                 )
 
         # Check for new signal on this bar (only enter if no position)
@@ -218,34 +254,40 @@ def run_backtest(
 
                 entry_side = "buy" if sig.signal_type == SignalType.BUY else "sell"
                 entry_price = _apply_slippage(signal_price, entry_side, slippage_bps)
+                side = "long" if sig.signal_type == SignalType.BUY else "short"
+                exit_plan = build_exit_plan(
+                    strategy_name=strategy_name,
+                    research_profile=research_profile,
+                    bars=bars,
+                    signal_time=current_time,
+                    side=side,
+                    entry_price=entry_price,
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=take_profit_pct,
+                )
 
                 if fixed_quantity is not None:
                     qty = fixed_quantity
                 else:
                     # Position sizing based on risk
                     risk_amount = capital * (risk_per_trade_pct / 100.0)
-                    stop_distance = entry_price * (stop_loss_pct / 100.0)
+                    stop_distance = abs(entry_price - exit_plan.stop_price)
                     if stop_distance <= 0:
                         continue
                     qty = max(1, int(risk_amount / stop_distance))
 
-                if sig.signal_type == SignalType.BUY:
-                    stop = entry_price * (1 - stop_loss_pct / 100.0)
-                    target = entry_price * (1 + take_profit_pct / 100.0)
-                    side = "long"
-                else:
-                    stop = entry_price * (1 + stop_loss_pct / 100.0)
-                    target = entry_price * (1 - take_profit_pct / 100.0)
-                    side = "short"
-
                 position = {
                     "side": side,
                     "entry_price": entry_price,
-                    "stop": stop,
-                    "target": target,
+                    "stop": exit_plan.stop_price,
+                    "target": exit_plan.target_price,
                     "qty": qty,
                     "entry_time": current_time,
                     "reason": sig.reason,
+                    "stop_reason": exit_plan.stop_reason,
+                    "target_reason": exit_plan.target_reason,
+                    "initial_risk": abs(entry_price - exit_plan.stop_price),
+                    "max_favorable_price": entry_price,
                 }
                 break
 
@@ -348,11 +390,14 @@ def run_backtest(
                 "entry_price": round(t.entry_price, 2),
                 "exit_price": round(t.exit_price, 2),
                 "stop_loss": round(t.stop_loss, 2),
+                "target_price": round(t.target_price, 2) if t.target_price is not None else None,
                 "quantity": t.quantity,
                 "pnl": round(t.pnl, 2),
                 "pnl_pct": round(t.pnl_pct, 2),
                 "reason": t.reason,
                 "exit_reason": t.exit_reason,
+                "stop_reason": t.stop_reason,
+                "target_reason": t.target_reason,
             }
             for t in trades
         ],

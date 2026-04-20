@@ -360,3 +360,100 @@ def test_run_backtest_applies_unfavorable_slippage_to_entry_and_exit():
     assert slipped.trades[0]["entry_price"] == 100.1
     assert slipped.trades[0]["exit_price"] == 100.9
     assert slipped.trades[0]["pnl"] == 7.99
+
+
+def test_run_backtest_phase1_small_pb_uses_structural_stop_instead_of_fixed_pct():
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 499.8, 500.2, 499.4, 500.0),
+        _bar("2025-01-06T14:35:00+00:00", 500.0, 500.3, 498.0, 499.1),
+        _bar("2025-01-06T14:40:00+00:00", 499.1, 500.8, 498.6, 500.7),
+        _bar("2025-01-06T14:45:00+00:00", 500.7, 500.9, 497.9, 498.4),
+        _bar("2025-01-06T20:55:00+00:00", 498.4, 498.8, 498.3, 498.5),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=500.7,
+            quantity=1,
+            reason="phase1-structural-stop",
+            timestamp=datetime.fromisoformat("2025-01-06T14:40:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_small_pb_trend",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["entry_time"] == "2025-01-06T14:40:00+00:00"
+    assert result.trades[0]["exit_time"] == "2025-01-06T14:45:00+00:00"
+    assert result.trades[0]["exit_reason"] == "stop_loss"
+    assert result.trades[0]["stop_loss"] == 498.0
+    assert result.trades[0]["target_price"] is None
+    assert result.trades[0]["target_reason"] is None
+
+
+def test_run_backtest_phase1_small_pb_exits_on_strong_bear_below_ema_after_1r():
+    bars = []
+    price = 101.8
+    hour = 14
+    minute = 30
+    for idx in range(18):
+        ts = f"2025-01-06T{hour:02d}:{minute:02d}:00+00:00"
+        bars.append(_bar(ts, price, price + 0.2, price - 0.1, price + 0.1))
+        minute += 5
+        if minute >= 60:
+            hour += 1
+            minute -= 60
+
+    bars.extend(
+        [
+            _bar("2025-01-06T16:00:00+00:00", 102.0, 102.1, 101.8, 101.85),
+            _bar("2025-01-06T16:05:00+00:00", 101.85, 102.4, 101.9, 102.3),
+            _bar("2025-01-06T16:10:00+00:00", 102.3, 102.9, 102.2, 102.7),
+            _bar("2025-01-06T16:15:00+00:00", 102.7, 102.75, 102.1, 102.25),
+            _bar("2025-01-06T16:20:00+00:00", 102.25, 102.6, 102.2, 102.5),
+            _bar("2025-01-06T16:25:00+00:00", 102.45, 102.5, 101.95, 102.0),
+            _bar("2025-01-06T20:55:00+00:00", 102.0, 102.1, 101.9, 102.05),
+        ]
+    )
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=102.3,
+            quantity=1,
+            reason="phase1-dynamic-exit",
+            timestamp=datetime.fromisoformat("2025-01-06T16:05:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_small_pb_trend",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        fixed_quantity=100,
+        slippage_bps=0.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["entry_time"] == "2025-01-06T16:05:00+00:00"
+    assert result.trades[0]["exit_time"] == "2025-01-06T16:25:00+00:00"
+    assert (
+        result.trades[0]["exit_reason"]
+        == "phase1_confirmed_swing_low_break_after_1r"
+    )
+    assert result.trades[0]["exit_price"] == 102.0

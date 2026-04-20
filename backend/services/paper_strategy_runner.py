@@ -14,6 +14,8 @@ from config import PAPER_TRADING
 from services import market_data, trade_updates
 from services.alpaca_client import alpaca_client
 from services.analysis_bars import get_analysis_bars
+from services.phase1_exit import build_exit_plan
+from services.phase1_exit import build_dynamic_exit_decision, compute_ema_series
 from services.research_profile import (
     is_rth_bar_timestamp,
     is_session_final_bar_timestamp,
@@ -51,9 +53,13 @@ class LivePosition:
     quantity: int
     entry_price: float
     stop_price: float
-    target_price: float
+    target_price: float | None
     entry_time: str
     reason: str
+    stop_reason: str
+    target_reason: str | None
+    initial_risk: float
+    max_favorable_price: float
 
 
 @dataclass
@@ -64,6 +70,7 @@ class PendingOrder:
     status: str
     reason: str
     submitted_at: str
+    signal_time: str
 
 
 @dataclass
@@ -232,12 +239,39 @@ class Phase1PaperRunner:
                     exit_time=bar["time"],
                     reason="stop_loss",
                 )
-            elif self.position is not None and bar["high"] >= self.position.target_price:
+            elif (
+                self.position is not None
+                and self.position.target_price is not None
+                and bar["high"] >= self.position.target_price
+            ):
                 await self._submit_exit(
                     exit_price=self.position.target_price,
                     exit_time=bar["time"],
                     reason="take_profit",
                 )
+            else:
+                dynamic_exit = build_dynamic_exit_decision(
+                    strategy_name=self.config.strategy,
+                    research_profile=self.config.research_profile,
+                    bars=self.bars,
+                    bar_index=len(self.bars) - 1,
+                    ema_values=compute_ema_series(self.bars, 20),
+                    side="long",
+                    entry_price=self.position.entry_price,
+                    stop_price=self.position.stop_price,
+                    max_favorable_price=self.position.max_favorable_price,
+                )
+                if dynamic_exit is not None:
+                    await self._submit_exit(
+                        exit_price=dynamic_exit.exit_price,
+                        exit_time=bar["time"],
+                        reason=dynamic_exit.reason,
+                    )
+                elif self.position is not None:
+                    self.position.max_favorable_price = max(
+                        self.position.max_favorable_price,
+                        float(bar["high"]),
+                    )
 
         if self.position is None:
             signals = self.strategy.generate_signals(self.config.symbol, self.bars)
@@ -279,13 +313,27 @@ class Phase1PaperRunner:
         )
         if trade_info.get("status") == "filled":
             filled_price = float(trade_info.get("price") or entry_price)
+            exit_plan = build_exit_plan(
+                strategy_name=self.config.strategy,
+                research_profile=self.config.research_profile,
+                bars=self.bars,
+                signal_time=entry_time,
+                side="long",
+                entry_price=filled_price,
+                stop_loss_pct=self.config.stop_loss_pct,
+                take_profit_pct=self.config.take_profit_pct,
+            )
             self.position = LivePosition(
                 quantity=int(trade_info.get("qty") or self.config.fixed_quantity),
                 entry_price=filled_price,
-                stop_price=filled_price * (1 - self.config.stop_loss_pct / 100.0),
-                target_price=filled_price * (1 + self.config.take_profit_pct / 100.0),
+                stop_price=exit_plan.stop_price,
+                target_price=exit_plan.target_price,
                 entry_time=entry_time,
                 reason=reason,
+                stop_reason=exit_plan.stop_reason,
+                target_reason=exit_plan.target_reason,
+                initial_risk=abs(filled_price - exit_plan.stop_price),
+                max_favorable_price=filled_price,
             )
             self._record_event(
                 "position_opened",
@@ -300,6 +348,7 @@ class Phase1PaperRunner:
             status=str(trade_info.get("status") or "submitted"),
             reason=reason,
             submitted_at=_now_utc().isoformat(),
+            signal_time=entry_time,
         )
 
     async def _submit_exit(self, exit_price: float, exit_time: str, reason: str) -> None:
@@ -330,6 +379,7 @@ class Phase1PaperRunner:
             status=str(trade_info.get("status") or "submitted"),
             reason=reason,
             submitted_at=_now_utc().isoformat(),
+            signal_time=exit_time,
         )
 
     async def _restore_broker_state(self) -> None:
@@ -356,16 +406,23 @@ class Phase1PaperRunner:
         )
         if recovered_pending is not None:
             pending_order = open_orders[recovered_pending["alpaca_order_id"]]
+            submitted_at = str(
+                recovered_pending.get("created_at")
+                or pending_order.get("created_at")
+                or _now_utc().isoformat()
+            )
+            pending_side = str(pending_order["side"])
             self.pending_order = PendingOrder(
                 alpaca_order_id=recovered_pending["alpaca_order_id"],
-                side=str(pending_order["side"]),
+                side=pending_side,
                 quantity=int(float(pending_order["qty"])),
                 status=str(pending_order["status"]),
                 reason=str(recovered_pending.get("signal_reason") or recovered_pending["side"]),
-                submitted_at=str(
-                    recovered_pending.get("created_at")
-                    or pending_order.get("created_at")
-                    or _now_utc().isoformat()
+                submitted_at=submitted_at,
+                signal_time=(
+                    _previous_five_min_slot_timestamp(submitted_at)
+                    if pending_side == "buy"
+                    else submitted_at
                 ),
             )
             self._record_event(
@@ -391,16 +448,32 @@ class Phase1PaperRunner:
         )
         entry_price = float(broker_position["avg_entry"])
         quantity = int(float(broker_position["qty"]))
+        recovered_entry_time = str(
+            (recent_buy or {}).get("created_at")
+            or datetime.now(timezone.utc).isoformat()
+        )
+        recovered_signal_time = _previous_five_min_slot_timestamp(recovered_entry_time)
+        exit_plan = build_exit_plan(
+            strategy_name=self.config.strategy,
+            research_profile=self.config.research_profile,
+            bars=self.bars,
+            signal_time=recovered_signal_time,
+            side="long",
+            entry_price=entry_price,
+            stop_loss_pct=self.config.stop_loss_pct,
+            take_profit_pct=self.config.take_profit_pct,
+        )
         self.position = LivePosition(
             quantity=quantity,
             entry_price=entry_price,
-            stop_price=entry_price * (1 - self.config.stop_loss_pct / 100.0),
-            target_price=entry_price * (1 + self.config.take_profit_pct / 100.0),
-            entry_time=str(
-                (recent_buy or {}).get("created_at")
-                or datetime.now(timezone.utc).isoformat()
-            ),
+            stop_price=exit_plan.stop_price,
+            target_price=exit_plan.target_price,
+            entry_time=recovered_entry_time,
             reason=str((recent_buy or {}).get("signal_reason") or "recovered_broker_position"),
+            stop_reason=exit_plan.stop_reason,
+            target_reason=exit_plan.target_reason,
+            initial_risk=abs(entry_price - exit_plan.stop_price),
+            max_favorable_price=entry_price,
         )
         self._record_event(
             "position_recovered",
@@ -425,13 +498,27 @@ class Phase1PaperRunner:
             if self.pending_order.side == "buy":
                 entry_price = float(order.get("filled_avg_price") or 0.0)
                 quantity = int(float(order.get("filled_qty") or order.get("qty") or self.pending_order.quantity))
+                exit_plan = build_exit_plan(
+                    strategy_name=self.config.strategy,
+                    research_profile=self.config.research_profile,
+                    bars=self.bars,
+                    signal_time=self.pending_order.signal_time,
+                    side="long",
+                    entry_price=entry_price,
+                    stop_loss_pct=self.config.stop_loss_pct,
+                    take_profit_pct=self.config.take_profit_pct,
+                )
                 self.position = LivePosition(
                     quantity=quantity,
                     entry_price=entry_price,
-                    stop_price=entry_price * (1 - self.config.stop_loss_pct / 100.0),
-                    target_price=entry_price * (1 + self.config.take_profit_pct / 100.0),
+                    stop_price=exit_plan.stop_price,
+                    target_price=exit_plan.target_price,
                     entry_time=str(order.get("filled_at") or order.get("created_at") or datetime.now(timezone.utc).isoformat()),
                     reason=self.pending_order.reason,
+                    stop_reason=exit_plan.stop_reason,
+                    target_reason=exit_plan.target_reason,
+                    initial_risk=abs(entry_price - exit_plan.stop_price),
+                    max_favorable_price=entry_price,
                 )
                 self._record_event(
                     "position_opened",
@@ -466,13 +553,27 @@ class Phase1PaperRunner:
 
             if status == "filled":
                 if side == "buy":
+                    exit_plan = build_exit_plan(
+                        strategy_name=self.config.strategy,
+                        research_profile=self.config.research_profile,
+                        bars=self.bars,
+                        signal_time=self.pending_order.signal_time,
+                        side="long",
+                        entry_price=price,
+                        stop_loss_pct=self.config.stop_loss_pct,
+                        take_profit_pct=self.config.take_profit_pct,
+                    )
                     self.position = LivePosition(
                         quantity=qty,
                         entry_price=price,
-                        stop_price=price * (1 - self.config.stop_loss_pct / 100.0),
-                        target_price=price * (1 + self.config.take_profit_pct / 100.0),
+                        stop_price=exit_plan.stop_price,
+                        target_price=exit_plan.target_price,
                         entry_time=timestamp,
                         reason=reason or self.pending_order.reason,
+                        stop_reason=exit_plan.stop_reason,
+                        target_reason=exit_plan.target_reason,
+                        initial_risk=abs(price - exit_plan.stop_price),
+                        max_favorable_price=price,
                     )
                     self._record_event(
                         "position_opened",
@@ -708,6 +809,13 @@ def _five_min_slot_timestamp(timestamp: str) -> str:
     floored_minute = (local.minute // 5) * 5
     slot_local = local.replace(minute=floored_minute, second=0, microsecond=0)
     return slot_local.astimezone(timezone.utc).isoformat()
+
+
+def _previous_five_min_slot_timestamp(timestamp: str) -> str:
+    local = market_time(timestamp)
+    floored_minute = (local.minute // 5) * 5
+    slot_local = local.replace(minute=floored_minute, second=0, microsecond=0)
+    return (slot_local - timedelta(minutes=5)).astimezone(timezone.utc).isoformat()
 
 
 def _start_aggregate_bar(slot_time: str, minute_bar: dict) -> dict:

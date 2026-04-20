@@ -150,6 +150,7 @@ export default function BacktestPanel({
   const [allResults, setAllResults] = useState<BacktestResult[] | null>(null);
 
   const currentStrategy = strategies.find((s) => s.name === selected);
+  const usesStructuralPhase1Exits = selected === "brooks_small_pb_trend";
 
   return (
     <div className="space-y-4">
@@ -208,6 +209,11 @@ export default function BacktestPanel({
             Fixed research path: {RESEARCH_SYMBOL} on {RESEARCH_TIMEFRAME} bars
             with the {RESEARCH_PROFILE} profile.
           </p>
+          {usesStructuralPhase1Exits && (
+            <p className="rounded-lg border border-amber-400/10 bg-amber-400/5 px-3 py-2 text-xs text-amber-100">
+              `brooks_small_pb_trend` 在 `qqq_5m_phase1` 下会使用结构止损 + `1R` 后跌破已确认回调低点并收回 `EMA20` 下方的动态离场，仍保留收盘强平。
+            </p>
+          )}
           <div className="flex items-center gap-2">
             <label className="w-28 shrink-0 text-xs text-slate-400">
               Start Date
@@ -242,6 +248,7 @@ export default function BacktestPanel({
               onChange={(e) =>
                 setConfig((c) => ({ ...c, stop_loss_pct: Number(e.target.value) }))
               }
+              disabled={usesStructuralPhase1Exits}
               className="flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-sm font-mono text-white"
             />
           </div>
@@ -256,6 +263,7 @@ export default function BacktestPanel({
               onChange={(e) =>
                 setConfig((c) => ({ ...c, take_profit_pct: Number(e.target.value) }))
               }
+              disabled={usesStructuralPhase1Exits}
               className="flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-sm font-mono text-white"
             />
           </div>
