@@ -1,14 +1,21 @@
 from services.strategy_engine import get_strategy
 
 
-def _bar(ts: str, open_: float, high: float, low: float, close: float) -> dict:
+def _bar(
+    ts: str,
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    volume: int = 1000,
+) -> dict:
     return {
         "time": ts,
         "open": open_,
         "high": high,
         "low": low,
         "close": close,
-        "volume": 1000,
+        "volume": volume,
     }
 
 
@@ -44,5 +51,47 @@ def test_breakout_pullback_skips_signal_when_pullback_breaks_breakout_level():
     )
 
     signals = strategy.generate_signals("QQQ", _bars_with_pullback_low(100.9))
+
+    assert signals == []
+
+
+def test_breakout_pullback_skips_signal_when_pullback_retraces_too_deep():
+    strategy = get_strategy(
+        "brooks_breakout_pullback",
+        {"range_lookback": 3, "ema_period": 3, "quantity": 1},
+    )
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 100.0, 100.4, 99.9, 100.2),
+        _bar("2025-01-06T14:35:00+00:00", 100.2, 100.8, 100.1, 100.6),
+        _bar("2025-01-06T14:40:00+00:00", 100.6, 101.1, 100.5, 100.9),
+        _bar("2025-01-06T14:45:00+00:00", 100.9, 101.2, 100.8, 101.0),
+        _bar("2025-01-06T14:50:00+00:00", 101.0, 103.2, 100.95, 102.9),
+        _bar("2025-01-06T14:55:00+00:00", 102.9, 103.0, 101.15, 101.4),
+        _bar("2025-01-06T15:00:00+00:00", 101.4, 103.3, 101.35, 103.1),
+        _bar("2025-01-06T15:05:00+00:00", 103.1, 103.2, 102.9, 103.0),
+    ]
+
+    signals = strategy.generate_signals("QQQ", bars)
+
+    assert signals == []
+
+
+def test_breakout_pullback_skips_signal_when_resumption_is_below_session_open():
+    strategy = get_strategy(
+        "brooks_breakout_pullback",
+        {"range_lookback": 2, "ema_period": 3, "quantity": 1},
+    )
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 104.0, 104.05, 103.2, 103.25, volume=30000),
+        _bar("2025-01-06T14:35:00+00:00", 103.25, 103.4, 102.9, 103.0, volume=16000),
+        _bar("2025-01-06T14:40:00+00:00", 103.0, 103.3, 102.6, 102.8, volume=12000),
+        _bar("2025-01-06T14:45:00+00:00", 102.8, 102.95, 102.7, 102.85, volume=9000),
+        _bar("2025-01-06T14:50:00+00:00", 102.85, 103.65, 102.8, 103.62, volume=11000),
+        _bar("2025-01-06T14:55:00+00:00", 103.62, 103.63, 103.42, 103.5, volume=6000),
+        _bar("2025-01-06T15:00:00+00:00", 103.5, 103.8, 103.48, 103.7, volume=8000),
+        _bar("2025-01-06T15:05:00+00:00", 103.7, 103.72, 103.55, 103.62, volume=5000),
+    ]
+
+    signals = strategy.generate_signals("QQQ", bars)
 
     assert signals == []

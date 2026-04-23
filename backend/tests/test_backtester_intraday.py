@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from services.backtester import run_backtest
 from strategies.base import Signal, SignalType
 
@@ -13,6 +15,41 @@ def _bar(ts: str, open_: float, high: float, low: float, close: float) -> dict:
         "close": close,
         "volume": 1000,
     }
+
+
+def test_run_backtest_matches_signal_to_cached_style_bar_timestamp():
+    bars = [
+        _bar("2025-01-06T14:30:00.000000+00:00", 500.0, 500.2, 499.9, 500.1),
+        _bar("2025-01-06T14:35:00.000000+00:00", 500.1, 500.4, 500.0, 500.3),
+        _bar("2025-01-06T14:40:00.000000+00:00", 500.3, 500.6, 500.2, 500.5),
+        _bar("2025-01-06T20:55:00.000000+00:00", 500.3, 500.7, 500.2, 500.6),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=500.5,
+            quantity=1,
+            reason="cached-style-timestamp",
+            timestamp=datetime.fromisoformat("2025-01-06T14:40:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_breakout_pullback",
+        signals=signals,
+        bars=bars,
+        fixed_quantity=10,
+        stop_loss_pct=10.0,
+        take_profit_pct=20.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["entry_time"] == "2025-01-06T14:40:00+00:00"
+    assert result.trades[0]["reason"] == "cached-style-timestamp"
 
 
 def test_run_backtest_uses_exact_intraday_signal_timestamp():
@@ -457,3 +494,170 @@ def test_run_backtest_phase1_small_pb_exits_on_strong_bear_below_ema_after_1r():
         == "phase1_confirmed_swing_low_break_after_1r"
     )
     assert result.trades[0]["exit_price"] == 102.0
+
+
+def test_run_backtest_phase1_breakout_pullback_uses_structural_stop_instead_of_fixed_pct():
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 100.0, 100.2, 99.9, 100.1),
+        _bar("2025-01-06T14:35:00+00:00", 100.1, 100.5, 100.0, 100.4),
+        _bar("2025-01-06T14:40:00+00:00", 100.4, 103.0, 100.4, 102.7),
+        _bar("2025-01-06T14:45:00+00:00", 102.7, 102.8, 101.2, 101.8),
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 103.2, 101.7, 103.0),
+        _bar("2025-01-06T14:55:00+00:00", 103.0, 103.1, 100.3, 100.6),
+        _bar("2025-01-06T20:55:00+00:00", 100.6, 100.8, 100.5, 100.7),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=103.0,
+            quantity=1,
+            reason="phase1-breakout-structural-stop",
+            timestamp=datetime.fromisoformat("2025-01-06T14:50:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_breakout_pullback",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+        exit_policy="breakout_session_close",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["entry_time"] == "2025-01-06T14:50:00+00:00"
+    assert result.trades[0]["exit_time"] == "2025-01-06T14:55:00+00:00"
+    assert result.trades[0]["exit_reason"] == "stop_loss"
+    assert result.trades[0]["stop_loss"] == 100.4
+    assert result.trades[0]["target_price"] is None
+    assert result.trades[0]["target_reason"] is None
+
+
+def test_run_backtest_phase1_breakout_pullback_can_take_profit_at_1r_target():
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 100.0, 100.2, 99.9, 100.1),
+        _bar("2025-01-06T14:35:00+00:00", 100.1, 100.5, 100.0, 100.4),
+        _bar("2025-01-06T14:40:00+00:00", 100.4, 103.4, 100.4, 102.7),
+        _bar("2025-01-06T14:45:00+00:00", 102.7, 102.8, 101.2, 101.8),
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 103.2, 101.7, 103.0),
+        _bar("2025-01-06T14:55:00+00:00", 103.0, 105.8, 102.9, 105.2),
+        _bar("2025-01-06T20:55:00+00:00", 105.2, 105.3, 105.1, 105.2),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=103.0,
+            quantity=1,
+            reason="phase1-breakout-target-1r",
+            timestamp=datetime.fromisoformat("2025-01-06T14:50:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_breakout_pullback",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+        exit_policy="breakout_target_1r",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["exit_time"] == "2025-01-06T14:55:00+00:00"
+    assert result.trades[0]["exit_reason"] == "take_profit"
+    assert result.trades[0]["target_price"] == 105.6
+    assert result.trades[0]["target_reason"] == "breakout_target_1r"
+
+
+def test_run_backtest_phase1_breakout_pullback_can_move_stop_to_break_even_after_1r():
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 100.0, 100.2, 99.9, 100.1),
+        _bar("2025-01-06T14:35:00+00:00", 100.1, 100.5, 100.0, 100.4),
+        _bar("2025-01-06T14:40:00+00:00", 100.4, 103.4, 100.4, 102.7),
+        _bar("2025-01-06T14:45:00+00:00", 102.7, 102.8, 101.2, 101.8),
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 103.2, 101.7, 103.0),
+        _bar("2025-01-06T14:55:00+00:00", 103.0, 106.0, 102.9, 105.7),
+        _bar("2025-01-06T15:00:00+00:00", 105.7, 105.8, 102.8, 103.1),
+        _bar("2025-01-06T20:55:00+00:00", 103.1, 103.2, 103.0, 103.1),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=103.0,
+            quantity=1,
+            reason="phase1-breakout-breakeven",
+            timestamp=datetime.fromisoformat("2025-01-06T14:50:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_breakout_pullback",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+        exit_policy="breakout_break_even_after_1r",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["exit_time"] == "2025-01-06T15:00:00+00:00"
+    assert result.trades[0]["exit_reason"] == "stop_loss"
+    assert result.trades[0]["stop_loss"] == 103.0
+    assert result.trades[0]["target_price"] is None
+
+
+def test_run_backtest_phase1_breakout_pullback_can_use_2_5r_target_with_0_75r_break_even():
+    bars = [
+        _bar("2025-01-06T14:30:00+00:00", 100.0, 100.2, 99.9, 100.1),
+        _bar("2025-01-06T14:35:00+00:00", 100.1, 100.5, 100.0, 100.4),
+        _bar("2025-01-06T14:40:00+00:00", 100.4, 103.4, 100.4, 102.7),
+        _bar("2025-01-06T14:45:00+00:00", 102.7, 102.8, 101.2, 101.8),
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 103.2, 101.7, 103.0),
+        _bar("2025-01-06T14:55:00+00:00", 103.0, 105.1, 102.9, 104.95),
+        _bar("2025-01-06T15:00:00+00:00", 104.95, 110.0, 104.8, 109.7),
+        _bar("2025-01-06T20:55:00+00:00", 109.7, 109.8, 109.6, 109.7),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=103.0,
+            quantity=1,
+            reason="phase1-breakout-2_5r-breakeven",
+            timestamp=datetime.fromisoformat("2025-01-06T14:50:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_breakout_pullback",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+        exit_policy="breakout_target_2_5r_break_even_after_0_75r",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["exit_reason"] == "take_profit"
+    assert result.trades[0]["stop_loss"] == 103.0
+    assert result.trades[0]["target_price"] == pytest.approx(109.5)
+    assert (
+        result.trades[0]["target_reason"]
+        == "breakout_target_2_5r_break_even_after_0_75r"
+    )

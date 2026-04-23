@@ -55,6 +55,9 @@ export interface StrategyInfo {
 export type Timeframe = "1m" | "5m" | "15m" | "1h" | "1D";
 
 export type ResearchProfile = "qqq_5m_phase1";
+export type Phase1StrategyName =
+  | "brooks_breakout_pullback"
+  | "brooks_small_pb_trend";
 
 export interface BacktestTrade {
   entry_time: string;
@@ -154,7 +157,7 @@ export interface PaperStrategyReadiness {
 
 export interface PaperStrategyStatus {
   running: boolean;
-  strategy: string;
+  strategy: Phase1StrategyName;
   symbol: string;
   timeframe: Timeframe;
   research_profile: ResearchProfile;

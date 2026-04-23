@@ -9,6 +9,7 @@ from services.research_profile import (
 
 MAX_ANALYSIS_BAR_LIMIT = 1000
 DEFAULT_ANALYSIS_BAR_LIMIT = MAX_ANALYSIS_BAR_LIMIT
+INCOMPLETE_BACKFILL_ERROR = "Historical bars are still incomplete after Alpaca backfill"
 
 
 async def get_analysis_bars(
@@ -30,11 +31,22 @@ async def get_analysis_bars(
             limit=limit,
         )
     else:
-        bars = await get_bars_with_cache(
-            symbol=normalized_symbol,
-            timeframe=timeframe,
-            start=start,
-            end=end,
-            limit=limit,
-        )
+        try:
+            bars = await get_bars_with_cache(
+                symbol=normalized_symbol,
+                timeframe=timeframe,
+                start=start,
+                end=end,
+                limit=limit,
+            )
+        except RuntimeError as exc:
+            if str(exc) != INCOMPLETE_BACKFILL_ERROR:
+                raise
+            bars = alpaca_client.get_bars(
+                symbol=normalized_symbol,
+                timeframe=timeframe,
+                start=start,
+                end=end,
+                limit=limit,
+            )
     return filter_bars_for_research_profile(bars, profile)

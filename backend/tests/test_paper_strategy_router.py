@@ -20,6 +20,7 @@ async def test_start_phase1_paper_strategy_forwards_request(monkeypatch):
     )
 
     req = paper_strategy_router.StartPhase1PaperRequest(
+        strategy="brooks_breakout_pullback",
         fixed_quantity=50,
         stop_loss_pct=1.5,
         take_profit_pct=3.5,
@@ -30,6 +31,7 @@ async def test_start_phase1_paper_strategy_forwards_request(monkeypatch):
 
     assert result == {"running": True, "symbol": "QQQ"}
     assert captured["kwargs"] == {
+        "strategy": "brooks_breakout_pullback",
         "fixed_quantity": 50,
         "stop_loss_pct": 1.5,
         "take_profit_pct": 3.5,
@@ -42,7 +44,7 @@ def test_get_phase1_paper_strategy_status(monkeypatch):
     monkeypatch.setattr(
         paper_strategy_router,
         "get_phase1_paper_runner_status",
-        lambda: {"running": True, "strategy": "brooks_small_pb_trend"},
+        lambda strategy=None: {"running": True, "strategy": "brooks_small_pb_trend"},
     )
 
     assert paper_strategy_router.get_phase1_paper_strategy_status() == {
@@ -55,8 +57,12 @@ def test_get_phase1_paper_strategy_status(monkeypatch):
 async def test_get_phase1_paper_strategy_history(monkeypatch):
     captured = {}
 
-    async def fake_get_phase1_paper_runner_history(limit: int = 10):
+    async def fake_get_phase1_paper_runner_history(
+        limit: int = 10,
+        strategy: str | None = None,
+    ):
         captured["limit"] = limit
+        captured["strategy"] = strategy
         return [{"id": 1, "symbol": "QQQ"}]
 
     monkeypatch.setattr(
@@ -69,6 +75,7 @@ async def test_get_phase1_paper_strategy_history(monkeypatch):
 
     assert result == [{"id": 1, "symbol": "QQQ"}]
     assert captured["limit"] == 7
+    assert captured["strategy"] is None
 
 
 def test_get_phase1_paper_strategy_readiness(monkeypatch):

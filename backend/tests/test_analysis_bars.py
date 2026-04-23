@@ -266,9 +266,61 @@ async def test_get_analysis_bars_treats_naive_intraday_timestamps_as_utc(monkeyp
     )
 
     assert [bar["time"] for bar in result] == [
-        "2025-01-06T14:30:00",
-        "2025-01-06T20:55:00",
+        "2025-01-06T14:30:00+00:00",
+        "2025-01-06T20:55:00+00:00",
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_bars_falls_back_to_direct_alpaca_when_cache_backfill_stays_incomplete(
+    monkeypatch,
+):
+    captured = {}
+    expected = [
+        {
+            "time": "2025-01-06T14:30:00+00:00",
+            "open": 498.5,
+            "high": 499.5,
+            "low": 498.0,
+            "close": 499.0,
+            "volume": 1200,
+        }
+    ]
+
+    async def fake_get_bars_with_cache(symbol, timeframe, start, end=None, limit=1000):
+        raise RuntimeError("Historical bars are still incomplete after Alpaca backfill")
+
+    def fake_get_bars(symbol, timeframe, start, end=None, limit=1000):
+        captured.update(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "start": start,
+                "end": end,
+                "limit": limit,
+            }
+        )
+        return expected
+
+    monkeypatch.setattr(analysis_bars, "get_bars_with_cache", fake_get_bars_with_cache)
+    monkeypatch.setattr(analysis_bars.alpaca_client, "get_bars", fake_get_bars)
+
+    result = await analysis_bars.get_analysis_bars(
+        symbol="qqq",
+        timeframe="5m",
+        start="2025-01-01",
+        end="2025-01-31",
+        limit=300,
+    )
+
+    assert result == expected
+    assert captured == {
+        "symbol": "QQQ",
+        "timeframe": "5m",
+        "start": "2025-01-01",
+        "end": "2025-01-31",
+        "limit": 300,
+    }
 
 
 @pytest.mark.asyncio

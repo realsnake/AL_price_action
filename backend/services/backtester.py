@@ -5,11 +5,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from services.phase1_exit import (
-    build_dynamic_exit_decision,
+    build_dynamic_exit_update,
     build_exit_plan,
     compute_ema_series,
 )
-from services.research_profile import get_research_profile, market_time, session_day
+from services.research_profile import (
+    canonical_timestamp,
+    get_research_profile,
+    market_time,
+    session_day,
+)
 from strategies.base import Signal, SignalType
 
 
@@ -102,6 +107,7 @@ def run_backtest(
     symbol: str = "QQQ",
     timeframe: str = "1D",
     research_profile: str | None = None,
+    exit_policy: str | None = None,
 ) -> BacktestResult:
     """
     Simulate trades based on signals with stop-loss and take-profit.
@@ -112,6 +118,7 @@ def run_backtest(
 
     Position sizing: risk_per_trade_pct of capital.
     """
+    bars = [{**bar, "time": canonical_timestamp(bar["time"])} for bar in bars]
     capital = initial_capital
     peak_capital = initial_capital
     max_dd = 0.0
@@ -140,7 +147,7 @@ def run_backtest(
     sorted_signals = sorted(signals, key=lambda s: s.timestamp)
     signal_by_time: dict[str, list[Signal]] = {}
     for sig in sorted_signals:
-        signal_time = sig.timestamp.isoformat()
+        signal_time = canonical_timestamp(sig.timestamp)
         signal_by_time.setdefault(signal_time, []).append(sig)
 
     def close_position(exit_time: str, exit_price: float, exit_reason: str) -> None:
@@ -185,7 +192,8 @@ def run_backtest(
         if position is not None:
             hit_stop = False
             hit_target = False
-            dynamic_exit = None
+            dynamic_update = None
+            candidate_max_favorable_price = position["max_favorable_price"]
 
             if position["side"] == "long":
                 if bar["low"] <= position["stop"]:
@@ -195,16 +203,24 @@ def run_backtest(
                     hit_target = True
                     exit_price = position["target"]
                 else:
-                    dynamic_exit = build_dynamic_exit_decision(
+                    candidate_max_favorable_price = max(
+                        position["max_favorable_price"],
+                        float(bar["high"]),
+                    )
+                    dynamic_update = build_dynamic_exit_update(
                         strategy_name=strategy_name,
                         research_profile=research_profile,
+                        exit_policy=exit_policy,
                         bars=bars,
                         bar_index=i,
                         ema_values=ema_values,
                         side=position["side"],
+                        signal_time=position["signal_time"],
                         entry_price=position["entry_price"],
-                        stop_price=position["stop"],
-                        max_favorable_price=position["max_favorable_price"],
+                        current_stop_price=position["stop"],
+                        current_target_price=position["target"],
+                        initial_risk=position["initial_risk"],
+                        max_favorable_price=candidate_max_favorable_price,
                     )
             else:  # short
                 if bar["high"] >= position["stop"]:
@@ -220,17 +236,29 @@ def run_backtest(
                     exit_price=exit_price,
                     exit_reason="stop_loss" if hit_stop else "take_profit",
                 )
-            elif dynamic_exit is not None:
+            elif dynamic_update is not None and dynamic_update.exit_reason is not None:
                 close_position(
                     exit_time=current_time,
-                    exit_price=dynamic_exit.exit_price,
-                    exit_reason=dynamic_exit.reason,
+                    exit_price=dynamic_update.exit_price,
+                    exit_reason=dynamic_update.exit_reason,
                 )
             elif position is not None and position["side"] == "long":
-                position["max_favorable_price"] = max(
-                    position["max_favorable_price"],
-                    float(bar["high"]),
-                )
+                if (
+                    dynamic_update is not None
+                    and dynamic_update.stop_price is not None
+                    and dynamic_update.stop_price > position["stop"]
+                ):
+                    position["stop"] = dynamic_update.stop_price
+                    position["stop_reason"] = (
+                        dynamic_update.stop_reason or position["stop_reason"]
+                    )
+                if (
+                    dynamic_update is not None
+                    and dynamic_update.target_price is not None
+                ):
+                    position["target"] = dynamic_update.target_price
+                    position["target_reason"] = dynamic_update.target_reason
+                position["max_favorable_price"] = candidate_max_favorable_price
 
         # Check for new signal on this bar (only enter if no position)
         if position is None and current_time in signal_by_time:
@@ -264,6 +292,7 @@ def run_backtest(
                     entry_price=entry_price,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
+                    exit_policy=exit_policy,
                 )
 
                 if fixed_quantity is not None:
@@ -288,6 +317,7 @@ def run_backtest(
                     "target_reason": exit_plan.target_reason,
                     "initial_risk": abs(entry_price - exit_plan.stop_price),
                     "max_favorable_price": entry_price,
+                    "signal_time": current_time,
                 }
                 break
 

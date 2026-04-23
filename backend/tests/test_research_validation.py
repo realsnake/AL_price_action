@@ -76,6 +76,30 @@ class DailyFirstBarStrategy:
         return signals
 
 
+def test_build_strategy_validation_report_matches_cached_style_bar_timestamps():
+    bars = [
+        _bar("2025-01-02T15:00:00.000000+00:00", 100.0),
+        _bar("2025-01-02T15:05:00.000000+00:00", 101.0),
+    ]
+
+    report = build_strategy_validation_report(
+        strategy_name="dummy",
+        bars=bars,
+        symbol="QQQ",
+        timeframe="5m",
+        strategy=FirstBarStrategy(),
+        fixed_quantity=1,
+        initial_capital=100.0,
+        stop_loss_pct=50.0,
+        take_profit_pct=200.0,
+        rolling_windows=(),
+    )
+
+    assert report["combined"]["signals"] == 1
+    assert report["combined"]["trades"] == 1
+    assert report["combined"]["exit_reasons"] == {"end_of_data": 1}
+
+
 def test_build_strategy_validation_report_summarizes_monthly_and_rolling_windows():
     bars = [
         _bar("2025-01-02T15:00:00+00:00", 100.0),
@@ -146,6 +170,52 @@ def test_build_strategy_validation_report_handles_empty_input():
     assert report["rolling"]["6m"]["summary"]["count"] == 0
 
 
+def test_build_strategy_validation_report_includes_recent_trade_day_and_latest_3m_snapshots():
+    bars = [
+        _bar("2025-01-02T15:00:00+00:00", 100.0),
+        _bar("2025-01-31T15:00:00+00:00", 110.0),
+        _bar("2025-02-03T15:00:00+00:00", 110.0),
+        _bar("2025-02-28T15:00:00+00:00", 100.0),
+        _bar("2025-03-03T15:00:00+00:00", 100.0),
+        _bar("2025-03-31T15:00:00+00:00", 120.0),
+        _bar("2025-04-01T15:00:00+00:00", 120.0),
+        _bar("2025-04-30T15:00:00+00:00", 90.0),
+    ]
+
+    report = build_strategy_validation_report(
+        strategy_name="dummy",
+        bars=bars,
+        symbol="QQQ",
+        timeframe="1D",
+        strategy=MonthBoundaryStrategy(),
+        fixed_quantity=1,
+        initial_capital=100.0,
+        stop_loss_pct=50.0,
+        take_profit_pct=200.0,
+        rolling_windows=(3,),
+    )
+
+    assert report["recent"] == {
+        "last_12_trade_days": {
+            "days": 1,
+            "trades": 1,
+            "period": "2025-02-03 ~ 2025-02-03",
+            "pnl": -20.0,
+            "return_pct": -20.0,
+            "wins": 0,
+            "losses": 1,
+            "positive": False,
+        },
+        "latest_3m": {
+            "label": "2025-02->2025-04",
+            "return_pct": -20.0,
+            "trades": 1,
+            "positive": False,
+        },
+        "gate_passed": False,
+    }
+
+
 def test_build_strategy_validation_report_includes_exit_reason_and_hold_stats():
     bars = [
         _bar("2025-01-02T15:00:00+00:00", 100.0),
@@ -201,3 +271,87 @@ def test_build_strategy_validation_report_includes_hold_to_close_benchmarks():
         "matched_slot_avg_return_pct_to_close": 10.0,
         "matched_slot_median_return_pct_to_close": 10.0,
     }
+
+
+def test_build_strategy_validation_report_threads_breakout_exit_policy_into_backtest():
+    bars = [
+        {
+            "time": "2025-01-02T15:00:00+00:00",
+            "open": 100.0,
+            "high": 100.2,
+            "low": 99.9,
+            "close": 100.1,
+            "volume": 1000,
+        },
+        {
+            "time": "2025-01-02T15:05:00+00:00",
+            "open": 100.1,
+            "high": 100.5,
+            "low": 100.0,
+            "close": 100.4,
+            "volume": 1000,
+        },
+        {
+            "time": "2025-01-02T15:10:00+00:00",
+            "open": 100.4,
+            "high": 103.4,
+            "low": 100.4,
+            "close": 102.7,
+            "volume": 1000,
+        },
+        {
+            "time": "2025-01-02T15:15:00+00:00",
+            "open": 102.7,
+            "high": 102.8,
+            "low": 101.2,
+            "close": 101.8,
+            "volume": 1000,
+        },
+        {
+            "time": "2025-01-02T15:20:00+00:00",
+            "open": 101.8,
+            "high": 103.2,
+            "low": 101.7,
+            "close": 103.0,
+            "volume": 1000,
+        },
+        {
+            "time": "2025-01-02T15:25:00+00:00",
+            "open": 103.0,
+            "high": 105.8,
+            "low": 102.9,
+            "close": 105.2,
+            "volume": 1000,
+        },
+    ]
+
+    class BreakoutSignalStrategy:
+        def generate_signals(self, symbol: str, bars: list[dict]) -> list[Signal]:
+            bar = bars[4]
+            return [
+                Signal(
+                    symbol=symbol,
+                    signal_type=SignalType.BUY,
+                    price=bar["close"],
+                    quantity=1,
+                    reason="breakout-entry",
+                    timestamp=datetime.fromisoformat(bar["time"]),
+                )
+            ]
+
+    report = build_strategy_validation_report(
+        strategy_name="brooks_breakout_pullback",
+        bars=bars,
+        symbol="QQQ",
+        timeframe="5m",
+        strategy=BreakoutSignalStrategy(),
+        fixed_quantity=1,
+        initial_capital=100.0,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        rolling_windows=(),
+        research_profile="qqq_5m_phase1",
+        exit_policy="breakout_target_1r",
+    )
+
+    assert report["combined"]["exit_reasons"] == {"take_profit": 1}

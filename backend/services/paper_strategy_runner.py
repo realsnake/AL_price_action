@@ -15,7 +15,7 @@ from services import market_data, trade_updates
 from services.alpaca_client import alpaca_client
 from services.analysis_bars import get_analysis_bars
 from services.phase1_exit import build_exit_plan
-from services.phase1_exit import build_dynamic_exit_decision, compute_ema_series
+from services.phase1_exit import build_dynamic_exit_update, compute_ema_series
 from services.research_profile import (
     is_rth_bar_timestamp,
     is_session_final_bar_timestamp,
@@ -34,16 +34,23 @@ from strategies.base import SignalType
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PHASE1_STRATEGY = "brooks_small_pb_trend"
+SUPPORTED_PHASE1_STRATEGIES = {
+    "brooks_small_pb_trend",
+    "brooks_breakout_pullback",
+}
+
 
 @dataclass(frozen=True)
 class Phase1PaperConfig:
-    strategy: str = "brooks_small_pb_trend"
+    strategy: str = DEFAULT_PHASE1_STRATEGY
     symbol: str = "QQQ"
     timeframe: str = "5m"
     research_profile: str = "qqq_5m_phase1"
     fixed_quantity: int = 100
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 4.0
+    exit_policy: str | None = None
     history_days: int = 10
     params: dict[str, Any] | None = None
 
@@ -55,6 +62,7 @@ class LivePosition:
     stop_price: float
     target_price: float | None
     entry_time: str
+    signal_time: str
     reason: str
     stop_reason: str
     target_reason: str | None
@@ -154,6 +162,7 @@ class Phase1PaperRunner:
             "fixed_quantity": self.config.fixed_quantity,
             "stop_loss_pct": self.config.stop_loss_pct,
             "take_profit_pct": self.config.take_profit_pct,
+            "exit_policy": self.config.exit_policy,
             "history_days": self.config.history_days,
             "params": self.config.params,
             "bar_count": len(self.bars),
@@ -250,28 +259,52 @@ class Phase1PaperRunner:
                     reason="take_profit",
                 )
             else:
-                dynamic_exit = build_dynamic_exit_decision(
+                candidate_max_favorable_price = max(
+                    self.position.max_favorable_price,
+                    float(bar["high"]),
+                )
+                dynamic_update = build_dynamic_exit_update(
                     strategy_name=self.config.strategy,
                     research_profile=self.config.research_profile,
+                    exit_policy=self.config.exit_policy,
                     bars=self.bars,
                     bar_index=len(self.bars) - 1,
                     ema_values=compute_ema_series(self.bars, 20),
                     side="long",
+                    signal_time=self.position.signal_time,
                     entry_price=self.position.entry_price,
-                    stop_price=self.position.stop_price,
-                    max_favorable_price=self.position.max_favorable_price,
+                    current_stop_price=self.position.stop_price,
+                    current_target_price=self.position.target_price,
+                    initial_risk=self.position.initial_risk,
+                    max_favorable_price=candidate_max_favorable_price,
                 )
-                if dynamic_exit is not None:
+                if dynamic_update is not None and dynamic_update.exit_reason is not None:
                     await self._submit_exit(
-                        exit_price=dynamic_exit.exit_price,
+                        exit_price=dynamic_update.exit_price,
                         exit_time=bar["time"],
-                        reason=dynamic_exit.reason,
+                        reason=dynamic_update.exit_reason,
                     )
                 elif self.position is not None:
-                    self.position.max_favorable_price = max(
-                        self.position.max_favorable_price,
-                        float(bar["high"]),
-                    )
+                    if (
+                        dynamic_update is not None
+                        and dynamic_update.stop_price is not None
+                        and dynamic_update.stop_price > self.position.stop_price
+                    ):
+                        self.position.stop_price = dynamic_update.stop_price
+                        self.position.stop_reason = (
+                            dynamic_update.stop_reason or self.position.stop_reason
+                        )
+                        self._record_event(
+                            "stop_updated",
+                            f"Raised stop to {self.position.stop_price:.2f} ({self.position.stop_reason})",
+                        )
+                    if (
+                        dynamic_update is not None
+                        and dynamic_update.target_price is not None
+                    ):
+                        self.position.target_price = dynamic_update.target_price
+                        self.position.target_reason = dynamic_update.target_reason
+                    self.position.max_favorable_price = candidate_max_favorable_price
 
         if self.position is None:
             signals = self.strategy.generate_signals(self.config.symbol, self.bars)
@@ -322,6 +355,7 @@ class Phase1PaperRunner:
                 entry_price=filled_price,
                 stop_loss_pct=self.config.stop_loss_pct,
                 take_profit_pct=self.config.take_profit_pct,
+                exit_policy=self.config.exit_policy,
             )
             self.position = LivePosition(
                 quantity=int(trade_info.get("qty") or self.config.fixed_quantity),
@@ -329,6 +363,7 @@ class Phase1PaperRunner:
                 stop_price=exit_plan.stop_price,
                 target_price=exit_plan.target_price,
                 entry_time=entry_time,
+                signal_time=entry_time,
                 reason=reason,
                 stop_reason=exit_plan.stop_reason,
                 target_reason=exit_plan.target_reason,
@@ -462,6 +497,7 @@ class Phase1PaperRunner:
             entry_price=entry_price,
             stop_loss_pct=self.config.stop_loss_pct,
             take_profit_pct=self.config.take_profit_pct,
+            exit_policy=self.config.exit_policy,
         )
         self.position = LivePosition(
             quantity=quantity,
@@ -469,6 +505,7 @@ class Phase1PaperRunner:
             stop_price=exit_plan.stop_price,
             target_price=exit_plan.target_price,
             entry_time=recovered_entry_time,
+            signal_time=recovered_signal_time,
             reason=str((recent_buy or {}).get("signal_reason") or "recovered_broker_position"),
             stop_reason=exit_plan.stop_reason,
             target_reason=exit_plan.target_reason,
@@ -507,6 +544,7 @@ class Phase1PaperRunner:
                     entry_price=entry_price,
                     stop_loss_pct=self.config.stop_loss_pct,
                     take_profit_pct=self.config.take_profit_pct,
+                    exit_policy=self.config.exit_policy,
                 )
                 self.position = LivePosition(
                     quantity=quantity,
@@ -514,6 +552,7 @@ class Phase1PaperRunner:
                     stop_price=exit_plan.stop_price,
                     target_price=exit_plan.target_price,
                     entry_time=str(order.get("filled_at") or order.get("created_at") or datetime.now(timezone.utc).isoformat()),
+                    signal_time=self.pending_order.signal_time,
                     reason=self.pending_order.reason,
                     stop_reason=exit_plan.stop_reason,
                     target_reason=exit_plan.target_reason,
@@ -562,6 +601,7 @@ class Phase1PaperRunner:
                         entry_price=price,
                         stop_loss_pct=self.config.stop_loss_pct,
                         take_profit_pct=self.config.take_profit_pct,
+                        exit_policy=self.config.exit_policy,
                     )
                     self.position = LivePosition(
                         quantity=qty,
@@ -569,6 +609,7 @@ class Phase1PaperRunner:
                         stop_price=exit_plan.stop_price,
                         target_price=exit_plan.target_price,
                         entry_time=timestamp,
+                        signal_time=self.pending_order.signal_time,
                         reason=reason or self.pending_order.reason,
                         stop_reason=exit_plan.stop_reason,
                         target_reason=exit_plan.target_reason,
@@ -635,16 +676,17 @@ def reset_phase1_paper_runner() -> None:
     _phase1_runner = None
 
 
-def _empty_runner_status() -> dict:
+def _empty_runner_status(strategy: str = DEFAULT_PHASE1_STRATEGY) -> dict:
     return {
         "running": False,
-        "strategy": "brooks_small_pb_trend",
+        "strategy": strategy,
         "symbol": "QQQ",
         "timeframe": "5m",
         "research_profile": "qqq_5m_phase1",
         "fixed_quantity": 100,
         "stop_loss_pct": 2.0,
         "take_profit_pct": 4.0,
+        "exit_policy": None,
         "history_days": 10,
         "params": None,
         "bar_count": 0,
@@ -662,9 +704,11 @@ def _empty_runner_status() -> dict:
 
 
 async def start_phase1_paper_runner(
+    strategy: str = DEFAULT_PHASE1_STRATEGY,
     fixed_quantity: int = 100,
     stop_loss_pct: float = 2.0,
     take_profit_pct: float = 4.0,
+    exit_policy: str | None = None,
     history_days: int = 10,
     params: dict[str, Any] | None = None,
 ) -> dict:
@@ -674,12 +718,16 @@ async def start_phase1_paper_runner(
         raise RuntimeError("Phase-1 paper runner requires PAPER_TRADING=true")
     if _phase1_runner is not None and _phase1_runner.running:
         raise RuntimeError("Phase-1 paper runner is already running")
+    if strategy not in SUPPORTED_PHASE1_STRATEGIES:
+        raise ValueError(f"Unsupported phase-1 strategy: {strategy}")
 
     runner = Phase1PaperRunner(
         Phase1PaperConfig(
+            strategy=strategy,
             fixed_quantity=fixed_quantity,
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
+            exit_policy=exit_policy,
             history_days=history_days,
             params=params,
         )
@@ -694,9 +742,17 @@ async def stop_phase1_paper_runner(close_position: bool = True) -> dict:
     return await _phase1_runner.stop(close_position=close_position)
 
 
-def get_phase1_paper_runner_status() -> dict:
+def get_phase1_paper_runner_status(
+    strategy: str | None = None,
+) -> dict:
     if _phase1_runner is None:
-        return _empty_runner_status()
+        return _empty_runner_status(strategy or DEFAULT_PHASE1_STRATEGY)
+    if (
+        not _phase1_runner.running
+        and strategy is not None
+        and strategy != _phase1_runner.config.strategy
+    ):
+        return _empty_runner_status(strategy)
     return _phase1_runner.status()
 
 
@@ -750,13 +806,23 @@ def get_phase1_paper_runner_readiness() -> dict:
     }
 
 
-async def get_phase1_paper_runner_history(limit: int = 10) -> list[dict]:
+async def get_phase1_paper_runner_history(
+    limit: int = 10,
+    strategy: str | None = None,
+) -> list[dict]:
+    target_strategy = strategy
+    if target_strategy is None and _phase1_runner is not None:
+        target_strategy = _phase1_runner.config.strategy
+    target_strategy = target_strategy or DEFAULT_PHASE1_STRATEGY
+    if target_strategy not in SUPPORTED_PHASE1_STRATEGIES:
+        raise ValueError(f"Unsupported phase-1 strategy: {target_strategy}")
+
     history = await get_trade_history(limit=max(limit * 5, limit))
     filtered = [
         trade
         for trade in history
         if trade.get("symbol") == "QQQ"
-        and trade.get("strategy") == "brooks_small_pb_trend"
+        and trade.get("strategy") == target_strategy
     ]
     return filtered[:limit]
 

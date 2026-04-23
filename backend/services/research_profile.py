@@ -47,8 +47,20 @@ def filter_bars_for_research_profile(
     bars: list[dict], profile: ResearchProfile | None
 ) -> list[dict]:
     if profile is None or profile.session != "rth":
-        return bars
-    return [bar for bar in bars if _is_rth_bar(bar["time"])]
+        return [_normalize_bar_time(bar) for bar in bars]
+    return [_normalize_bar_time(bar) for bar in bars if _is_rth_bar(bar["time"])]
+
+
+def canonical_timestamp(value: str | datetime) -> str:
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        parsed = value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.replace(microsecond=0).isoformat()
 
 
 def market_time(timestamp: str) -> datetime:
@@ -82,3 +94,10 @@ def is_session_final_bar_timestamp(timestamp: str, timeframe_minutes: int = 5) -
     session_close = _session_close_for(local.date())
     bar_end = local + timedelta(minutes=timeframe_minutes)
     return local < session_close <= bar_end
+
+
+def _normalize_bar_time(bar: dict) -> dict:
+    return {
+        **bar,
+        "time": canonical_timestamp(bar["time"]),
+    }

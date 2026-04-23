@@ -15,7 +15,11 @@ const RESEARCH_PROFILE: ResearchProfile = "qqq_5m_phase1";
 interface BacktestPanelProps {
   onSignals: (signals: Signal[]) => void;
   onEquityCurve: (curve: { time: string; equity: number }[]) => void;
-  onActivateResearchContext: () => void;
+  onActivateResearchContext: (request?: {
+    start: string;
+    limit: number;
+    researchProfile?: ResearchProfile;
+  }) => void;
   disabledReason?: string | null;
 }
 
@@ -48,9 +52,17 @@ export default function BacktestPanel({
         setStrategies(brooks);
         setLoadError("");
         if (brooks.length > 0) {
-          setSelected((prev) => prev || brooks[0].name);
+          const preferred =
+            brooks.find((s) => s.name === "brooks_breakout_pullback")?.name ??
+            brooks[0].name;
+          setSelected((prev) => prev || preferred);
           setParams((prev) =>
-            Object.keys(prev).length > 0 ? prev : { ...brooks[0].default_params },
+            Object.keys(prev).length > 0
+              ? prev
+              : {
+                  ...(brooks.find((s) => s.name === preferred)?.default_params ??
+                    brooks[0].default_params),
+                },
           );
         }
       })
@@ -68,7 +80,6 @@ export default function BacktestPanel({
 
   const handleRun = async () => {
     if (!selected) return;
-    onActivateResearchContext();
     setLoading(true);
     setResult(null);
     setAllResults(null);
@@ -83,6 +94,11 @@ export default function BacktestPanel({
         stop_loss_pct: config.stop_loss_pct,
         take_profit_pct: config.take_profit_pct,
         risk_per_trade_pct: config.risk_per_trade_pct,
+        researchProfile: RESEARCH_PROFILE,
+      });
+      onActivateResearchContext({
+        start: config.start,
+        limit: 1000,
         researchProfile: RESEARCH_PROFILE,
       });
       setResult(res);
@@ -117,7 +133,11 @@ export default function BacktestPanel({
   };
 
   const handleRunAll = async () => {
-    onActivateResearchContext();
+    onActivateResearchContext({
+      start: config.start,
+      limit: 1000,
+      researchProfile: RESEARCH_PROFILE,
+    });
     setLoading(true);
     setResult(null);
     setAllResults(null);
@@ -150,7 +170,9 @@ export default function BacktestPanel({
   const [allResults, setAllResults] = useState<BacktestResult[] | null>(null);
 
   const currentStrategy = strategies.find((s) => s.name === selected);
-  const usesStructuralPhase1Exits = selected === "brooks_small_pb_trend";
+  const usesStructuralPhase1Exits =
+    selected === "brooks_small_pb_trend" ||
+    selected === "brooks_breakout_pullback";
 
   return (
     <div className="space-y-4">
@@ -211,7 +233,9 @@ export default function BacktestPanel({
           </p>
           {usesStructuralPhase1Exits && (
             <p className="rounded-lg border border-amber-400/10 bg-amber-400/5 px-3 py-2 text-xs text-amber-100">
-              `brooks_small_pb_trend` 在 `qqq_5m_phase1` 下会使用结构止损 + `1R` 后跌破已确认回调低点并收回 `EMA20` 下方的动态离场，仍保留收盘强平。
+              {selected === "brooks_breakout_pullback"
+                ? "`brooks_breakout_pullback` 在 `qqq_5m_phase1` 下会使用 breakout / pullback 结构低点止损，达到 `0.75R` 后把止损抬到保本位，固定 `2.5R` 止盈，仍保留收盘强平。"
+                : "`brooks_small_pb_trend` 在 `qqq_5m_phase1` 下会使用结构止损 + `1R` 后跌破已确认回调低点并收回 `EMA20` 下方的动态离场，仍保留收盘强平。"}
             </p>
           )}
           <div className="flex items-center gap-2">

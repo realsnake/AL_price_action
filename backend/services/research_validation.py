@@ -7,7 +7,12 @@ from statistics import median
 from typing import Iterable
 
 from services.backtester import BacktestResult, run_backtest
-from services.research_profile import get_research_profile, market_time, session_day
+from services.research_profile import (
+    canonical_timestamp,
+    get_research_profile,
+    market_time,
+    session_day,
+)
 from services.strategy_engine import get_strategy
 
 
@@ -25,8 +30,11 @@ def build_strategy_validation_report(
     risk_per_trade_pct: float = 2.0,
     slippage_bps: float = 0.0,
     rolling_windows: tuple[int, ...] = (3, 6),
+    exit_policy: str | None = None,
+    signals: list | None = None,
     strategy=None,
 ) -> dict:
+    bars = [{**bar, "time": canonical_timestamp(bar["time"])} for bar in bars]
     strategy_impl = strategy or get_strategy(strategy_name)
     monthly_groups = _group_bars_by_month(bars)
     all_bars = list(bars)
@@ -44,6 +52,8 @@ def build_strategy_validation_report(
         take_profit_pct=take_profit_pct,
         risk_per_trade_pct=risk_per_trade_pct,
         slippage_bps=slippage_bps,
+        exit_policy=exit_policy,
+        precomputed_signals=signals,
     )
 
     monthly_windows = [
@@ -62,6 +72,8 @@ def build_strategy_validation_report(
             take_profit_pct=take_profit_pct,
             risk_per_trade_pct=risk_per_trade_pct,
             slippage_bps=slippage_bps,
+            exit_policy=exit_policy,
+            precomputed_signals=signals,
         )
         for label, month_bars in monthly_groups.items()
     ]
@@ -91,6 +103,8 @@ def build_strategy_validation_report(
                     take_profit_pct=take_profit_pct,
                     risk_per_trade_pct=risk_per_trade_pct,
                     slippage_bps=slippage_bps,
+                    exit_policy=exit_policy,
+                    precomputed_signals=signals,
                 )
             )
         rolling[f"{window_size}m"] = {
@@ -98,11 +112,19 @@ def build_strategy_validation_report(
             "windows": windows,
         }
 
+    recent_trade_days = _summarize_recent_trade_days(
+        combined_result.trades,
+        initial_capital=initial_capital,
+        day_count=12,
+    )
+    latest_3m = _latest_rolling_window_snapshot(rolling, "3m")
+
     return {
         "strategy": strategy_name,
         "symbol": symbol,
         "timeframe": timeframe,
         "research_profile": research_profile,
+        "exit_policy": exit_policy,
         "fixed_quantity": fixed_quantity,
         "slippage_bps": slippage_bps,
         "combined": _result_snapshot(len(combined_signals), combined_result),
@@ -112,6 +134,11 @@ def build_strategy_validation_report(
             "windows": monthly_windows,
         },
         "rolling": rolling,
+        "recent": {
+            "last_12_trade_days": recent_trade_days,
+            "latest_3m": latest_3m,
+            "gate_passed": recent_trade_days["positive"] and latest_3m["positive"],
+        },
     }
 
 
@@ -139,6 +166,8 @@ def _build_window_entry(
     take_profit_pct: float,
     risk_per_trade_pct: float,
     slippage_bps: float,
+    exit_policy: str | None,
+    precomputed_signals: list | None,
 ) -> dict:
     signals, result = _run_validation_window(
         strategy_impl=strategy_impl,
@@ -154,6 +183,8 @@ def _build_window_entry(
         take_profit_pct=take_profit_pct,
         risk_per_trade_pct=risk_per_trade_pct,
         slippage_bps=slippage_bps,
+        exit_policy=exit_policy,
+        precomputed_signals=precomputed_signals,
     )
     return {"label": label, **_result_snapshot(len(signals), result)}
 
@@ -173,11 +204,24 @@ def _run_validation_window(
     take_profit_pct: float,
     risk_per_trade_pct: float,
     slippage_bps: float,
+    exit_policy: str | None,
+    precomputed_signals: list | None,
 ) -> tuple[list, BacktestResult]:
-    source_bars = signal_bars if signal_bars is not None else bars
-    signals = strategy_impl.generate_signals(symbol, source_bars)
     window_times = {bar["time"] for bar in bars}
-    signals = [signal for signal in signals if signal.timestamp.isoformat() in window_times]
+    if precomputed_signals is None:
+        source_bars = signal_bars if signal_bars is not None else bars
+        signals = strategy_impl.generate_signals(symbol, source_bars)
+        signals = [
+            signal
+            for signal in signals
+            if canonical_timestamp(signal.timestamp) in window_times
+        ]
+    else:
+        signals = [
+            signal
+            for signal in precomputed_signals
+            if canonical_timestamp(signal.timestamp) in window_times
+        ]
     result = run_backtest(
         strategy_name=strategy_name,
         signals=signals,
@@ -191,6 +235,7 @@ def _run_validation_window(
         symbol=symbol,
         timeframe=timeframe,
         research_profile=research_profile,
+        exit_policy=exit_policy,
     )
     return signals, result
 
@@ -198,8 +243,12 @@ def _run_validation_window(
 def _window_signal_bars(all_bars: list[dict], window_bars: list[dict]) -> list[dict]:
     if not window_bars:
         return []
-    end_time = window_bars[-1]["time"]
-    return [bar for bar in all_bars if bar["time"] <= end_time]
+    end_time = datetime.fromisoformat(window_bars[-1]["time"])
+    return [
+        bar
+        for bar in all_bars
+        if datetime.fromisoformat(bar["time"]) <= end_time
+    ]
 
 
 def _result_snapshot(signal_count: int, result: BacktestResult) -> dict:
@@ -339,4 +388,59 @@ def _summarize_windows(
             "return_pct": worst["return_pct"],
             "trades": worst["trades"],
         },
+    }
+
+
+def _summarize_recent_trade_days(
+    trades: list[dict],
+    *,
+    initial_capital: float,
+    day_count: int,
+) -> dict:
+    grouped: OrderedDict[str, list[dict]] = OrderedDict()
+    for trade in trades:
+        grouped.setdefault(session_day(trade["entry_time"]), []).append(trade)
+
+    recent_days = list(grouped.keys())[-day_count:]
+    recent_trades = [trade for day in recent_days for trade in grouped.get(day, [])]
+    pnl = sum(float(trade["pnl"]) for trade in recent_trades)
+    wins = sum(1 for trade in recent_trades if float(trade["pnl"]) > 0)
+    losses = sum(1 for trade in recent_trades if float(trade["pnl"]) < 0)
+    return_pct = pnl / initial_capital * 100 if initial_capital else 0.0
+    period = (
+        f"{recent_days[0]} ~ {recent_days[-1]}"
+        if recent_days
+        else ""
+    )
+    return {
+        "days": len(recent_days),
+        "trades": len(recent_trades),
+        "period": period,
+        "pnl": round(pnl, 2),
+        "return_pct": round(return_pct, 2),
+        "wins": wins,
+        "losses": losses,
+        "positive": pnl > 0,
+    }
+
+
+def _latest_rolling_window_snapshot(
+    rolling: dict,
+    bucket: str,
+) -> dict:
+    windows = rolling.get(bucket, {}).get("windows", [])
+    if not windows:
+        return {
+            "label": "",
+            "return_pct": 0.0,
+            "trades": 0,
+            "positive": False,
+        }
+
+    latest = windows[-1]
+    return {
+        "label": latest["label"],
+        "return_pct": latest["return_pct"],
+        "trades": latest["trades"],
+        "positive": latest["return_pct"] > 0,
     }

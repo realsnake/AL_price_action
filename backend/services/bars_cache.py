@@ -178,8 +178,10 @@ def _normalize_timestamp(value):
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.replace(microsecond=0)
 
 
 def _first_expected_timestamp(start_dt: datetime, timeframe: str) -> datetime:
@@ -362,7 +364,7 @@ def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
 def _serialize_rows(rows) -> list[dict]:
     return [
         {
-            "time": row.timestamp.isoformat(),
+            "time": _normalize_timestamp(row.timestamp).isoformat(),
             "open": row.open,
             "high": row.high,
             "low": row.low,
@@ -378,7 +380,7 @@ async def _upsert_bars(
 ) -> None:
     """Insert bars into cache, updating on conflict (upsert)."""
     for bar in bars:
-        ts = datetime.fromisoformat(bar["time"])
+        ts = _normalize_timestamp(datetime.fromisoformat(bar["time"]))
         stmt = sqlite_insert(BarCache).values(
             symbol=symbol,
             timeframe=timeframe,

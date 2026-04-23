@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getPhase1PaperStrategyHistory,
   getPhase1PaperStrategyReadiness,
@@ -7,6 +7,7 @@ import {
   stopPhase1PaperStrategy,
 } from "../services/api";
 import type {
+  Phase1StrategyName,
   PaperStrategyReadiness,
   PaperStrategyStatus,
   TradeHistoryEntry,
@@ -18,6 +19,24 @@ interface PaperStrategyPanelProps {
   onRunnerAction?: () => void;
 }
 
+const DEFAULT_PHASE1_STRATEGY: Phase1StrategyName = "brooks_breakout_pullback";
+
+const PHASE1_STRATEGY_META: Record<
+  Phase1StrategyName,
+  { label: string; detail: string }
+> = {
+  brooks_breakout_pullback: {
+    label: "Breakout pullback",
+    detail:
+      "qqq_5m_phase1 · 结构止损到 breakout/pullback 低点下方 · 0.75R 后提到保本 · 2.5R 固定止盈 · 收盘强平",
+  },
+  brooks_small_pb_trend: {
+    label: "Small pullback trend",
+    detail:
+      "qqq_5m_phase1 · 结构止损 · 1R 后跌破已确认回调低点并收回 EMA20 下方动态离场",
+  },
+};
+
 export default function PaperStrategyPanel({
   disabledReason,
   onRunnerAction,
@@ -25,27 +44,32 @@ export default function PaperStrategyPanel({
   const [status, setStatus] = useState<PaperStrategyStatus | null>(null);
   const [readiness, setReadiness] = useState<PaperStrategyReadiness | null>(null);
   const [recentTrades, setRecentTrades] = useState<TradeHistoryEntry[]>([]);
+  const [selectedStrategy, setSelectedStrategy] =
+    useState<Phase1StrategyName>(DEFAULT_PHASE1_STRATEGY);
   const [fixedQuantity, setFixedQuantity] = useState(100);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const refreshStatus = async () => {
+  const refreshStatus = useCallback(async (
+    strategy: Phase1StrategyName = selectedStrategy,
+  ) => {
     try {
       const [next, history, readinessInfo] = await Promise.all([
-        getPhase1PaperStrategyStatus(),
-        getPhase1PaperStrategyHistory(8),
+        getPhase1PaperStrategyStatus(strategy),
+        getPhase1PaperStrategyHistory(8, strategy),
         getPhase1PaperStrategyReadiness(),
       ]);
       setStatus(next);
       setRecentTrades(history);
       setReadiness(readinessInfo);
       setFixedQuantity(next.fixed_quantity);
+      setSelectedStrategy(next.strategy);
       setError("");
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Failed to load paper strategy status";
       setError(message);
     }
-  };
+  }, [selectedStrategy]);
 
   useWebSocket({
     url: "/ws/trades",
@@ -58,20 +82,20 @@ export default function PaperStrategyPanel({
       if (
         (msg.type === "trade" || msg.type === "trade_update") &&
         msg.symbol === "QQQ" &&
-        msg.strategy === "brooks_small_pb_trend"
+        msg.strategy === selectedStrategy
       ) {
-        void refreshStatus();
+        void refreshStatus(selectedStrategy);
       }
     },
   });
 
   useEffect(() => {
-    void refreshStatus();
+    void refreshStatus(selectedStrategy);
     const id = window.setInterval(() => {
-      void refreshStatus();
+      void refreshStatus(selectedStrategy);
     }, 15000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [selectedStrategy, refreshStatus]);
 
   const canStart = useMemo(
     () => !loading && !status?.running && !disabledReason,
@@ -87,9 +111,12 @@ export default function PaperStrategyPanel({
     setLoading(true);
     setError("");
     try {
-      const next = await startPhase1PaperStrategy({ fixed_quantity: fixedQuantity });
+      const next = await startPhase1PaperStrategy({
+        strategy: selectedStrategy,
+        fixed_quantity: fixedQuantity,
+      });
       setStatus(next);
-      void refreshStatus();
+      void refreshStatus(selectedStrategy);
       onRunnerAction?.();
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Failed to start paper strategy";
@@ -105,7 +132,7 @@ export default function PaperStrategyPanel({
     try {
       const next = await stopPhase1PaperStrategy();
       setStatus(next);
-      void refreshStatus();
+      void refreshStatus(next.strategy);
       onRunnerAction?.();
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Failed to stop paper strategy";
@@ -117,6 +144,7 @@ export default function PaperStrategyPanel({
 
   const formatTimestamp = (value: string | null) =>
     value ? new Date(value).toLocaleString() : "n/a";
+  const strategyMeta = PHASE1_STRATEGY_META[status?.strategy ?? selectedStrategy];
 
   return (
     <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4">
@@ -129,7 +157,7 @@ export default function PaperStrategyPanel({
             QQQ 5m phase1 runner
           </h3>
           <p className="mt-1 text-xs text-slate-400">
-            brooks_small_pb_trend · qqq_5m_phase1 · 结构止损 · 1R 后跌破已确认回调低点并收回 EMA20 下方动态离场
+            {status?.strategy ?? selectedStrategy} · {strategyMeta.detail}
           </p>
         </div>
         <span
@@ -144,6 +172,27 @@ export default function PaperStrategyPanel({
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <label className="mb-1 block text-xs text-slate-400">
+            Phase1 strategy
+          </label>
+          <select
+            value={selectedStrategy}
+            onChange={(e) => setSelectedStrategy(e.target.value as Phase1StrategyName)}
+            disabled={Boolean(status?.running)}
+            className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {(
+              Object.entries(PHASE1_STRATEGY_META) as Array<
+                [Phase1StrategyName, { label: string; detail: string }]
+              >
+            ).map(([value, meta]) => (
+              <option key={value} value={value}>
+                {meta.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">
             Fixed quantity
@@ -411,7 +460,7 @@ export default function PaperStrategyPanel({
           disabled={!canStart}
           className="flex-1 rounded-xl bg-cyan-500/90 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Start phase1
+          Start {strategyMeta.label}
         </button>
         <button
           onClick={() => void handleStop()}

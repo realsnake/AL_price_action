@@ -8,6 +8,7 @@ import type {
   StrategyInfo,
   BacktestResult,
   ResearchProfile,
+  Phase1StrategyName,
   PaperStrategyStatus,
   TradeHistoryEntry,
   PaperStrategyReadiness,
@@ -19,10 +20,20 @@ export async function getBars(
   symbol: string,
   timeframe: string,
   start: string,
-  limit = 200
+  limit = 200,
+  options?: {
+    researchProfile?: ResearchProfile;
+    research_profile?: ResearchProfile;
+  },
 ): Promise<Bar[]> {
+  const researchProfile = options?.researchProfile ?? options?.research_profile;
   const { data } = await api.get(`/market/bars/${symbol}`, {
-    params: { timeframe, start, limit },
+    params: {
+      timeframe,
+      start,
+      limit,
+      research_profile: researchProfile,
+    },
   });
   return data.bars;
 }
@@ -107,16 +118,21 @@ export async function runBacktest(req: {
   return data;
 }
 
-export async function getPhase1PaperStrategyStatus(): Promise<PaperStrategyStatus> {
-  const { data } = await api.get("/paper-strategy/phase1/status");
+export async function getPhase1PaperStrategyStatus(
+  strategy?: Phase1StrategyName,
+): Promise<PaperStrategyStatus> {
+  const { data } = await api.get("/paper-strategy/phase1/status", {
+    params: strategy ? { strategy } : undefined,
+  });
   return data;
 }
 
 export async function getPhase1PaperStrategyHistory(
   limit = 10,
+  strategy?: Phase1StrategyName,
 ): Promise<TradeHistoryEntry[]> {
   const { data } = await api.get("/paper-strategy/phase1/history", {
-    params: { limit },
+    params: strategy ? { limit, strategy } : { limit },
   });
   return data;
 }
@@ -127,6 +143,7 @@ export async function getPhase1PaperStrategyReadiness(): Promise<PaperStrategyRe
 }
 
 export async function startPhase1PaperStrategy(req?: {
+  strategy?: Phase1StrategyName;
   fixed_quantity?: number;
   stop_loss_pct?: number;
   take_profit_pct?: number;

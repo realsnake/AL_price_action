@@ -46,7 +46,7 @@ def client(monkeypatch):
         yield test_client
 
 
-def test_market_bars_returns_normal_response_when_cache_succeeds(client, monkeypatch):
+def test_market_bars_returns_normal_response_when_analysis_bars_succeed(client, monkeypatch):
     bars = [
         {
             "time": "2025-01-02T00:00:00+00:00",
@@ -58,10 +58,12 @@ def test_market_bars_returns_normal_response_when_cache_succeeds(client, monkeyp
         }
     ]
 
-    async def fake_get_bars_with_cache(symbol, timeframe, start, end=None, limit=1000):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         return bars
 
-    monkeypatch.setattr(market_router, "get_bars_with_cache", fake_get_bars_with_cache)
+    monkeypatch.setattr(market_router, "get_analysis_bars", fake_get_analysis_bars)
 
     response = client.get(
         "/api/market/bars/qqq",
@@ -76,11 +78,13 @@ def test_market_bars_returns_normal_response_when_cache_succeeds(client, monkeyp
     }
 
 
-def test_market_bars_returns_503_when_cache_needs_alpaca(client, monkeypatch):
-    async def fake_get_bars_with_cache(symbol, timeframe, start, end=None, limit=1000):
+def test_market_bars_returns_503_when_analysis_bars_need_alpaca(client, monkeypatch):
+    async def fake_get_analysis_bars(
+        symbol, timeframe, start, end=None, limit=1000, research_profile=None
+    ):
         raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
-    monkeypatch.setattr(market_router, "get_bars_with_cache", fake_get_bars_with_cache)
+    monkeypatch.setattr(market_router, "get_analysis_bars", fake_get_analysis_bars)
 
     response = client.get(
         "/api/market/bars/qqq",

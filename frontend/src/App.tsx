@@ -31,11 +31,17 @@ function getDefaultStart(tf: Timeframe): string {
 }
 
 type SidebarTab = "trade" | "backtest";
+type ChartRequest = {
+  start: string;
+  limit: number;
+  researchProfile?: "qqq_5m_phase1";
+};
 
 export default function App() {
   const [symbol, setSymbol] = useState("QQQ");
   const [symbolInput, setSymbolInput] = useState("QQQ");
   const [timeframe, setTimeframe] = useState<Timeframe>("5m");
+  const [chartRequest, setChartRequest] = useState<ChartRequest | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
@@ -46,7 +52,8 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("backtest");
   const [equityCurve, setEquityCurve] = useState<{ time: string; equity: number }[]>([]);
 
-  const startDate = getDefaultStart(timeframe);
+  const startDate = chartRequest?.start ?? getDefaultStart(timeframe);
+  const barLimit = chartRequest?.limit ?? 500;
 
   const { lastBar, connected: marketConnected } = useMarketData(symbol);
 
@@ -70,18 +77,23 @@ export default function App() {
     setBars((prev) => {
       if (prev.length === 0) return prev;
       const lastExisting = prev[prev.length - 1];
+      if (chartRequest !== null) {
+        return prev;
+      }
       if (lastExisting.time === lastBar.time) {
         return [...prev.slice(0, -1), lastBar];
       }
       return [...prev, lastBar];
     });
-  }, [lastBar]);
+  }, [chartRequest, lastBar]);
 
   const fetchBars = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const data = await getBars(symbol, timeframe, startDate, 500);
+      const data = await getBars(symbol, timeframe, startDate, barLimit, {
+        researchProfile: chartRequest?.researchProfile,
+      });
       setBars(data);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to load bars";
@@ -90,7 +102,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [symbol, timeframe, startDate]);
+  }, [barLimit, chartRequest?.researchProfile, symbol, timeframe, startDate]);
 
   const fetchAccountData = useCallback(async () => {
     try {
@@ -115,6 +127,7 @@ export default function App() {
     const s = symbolInput.trim().toUpperCase();
     if (s && s !== symbol) {
       setSymbol(s);
+      setChartRequest(null);
       setSignals([]);
       setEquityCurve([]);
     }
@@ -124,14 +137,15 @@ export default function App() {
     setNotifications((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const activateResearchContext = useCallback(() => {
+  const activateResearchContext = useCallback((request?: ChartRequest) => {
     const switchingChart = symbol !== "QQQ" || timeframe !== "5m";
     setSymbol("QQQ");
     setSymbolInput("QQQ");
     setTimeframe("5m");
+    setChartRequest(request ?? null);
     setSignals([]);
     setEquityCurve([]);
-    if (switchingChart) {
+    if (switchingChart || request !== undefined) {
       setBars([]);
       setError("");
       setLoading(true);
@@ -164,7 +178,12 @@ export default function App() {
             {TIMEFRAMES.map((tf) => (
               <button
                 key={tf}
-                onClick={() => { setTimeframe(tf); setSignals([]); setEquityCurve([]); }}
+                onClick={() => {
+                  setTimeframe(tf);
+                  setChartRequest(null);
+                  setSignals([]);
+                  setEquityCurve([]);
+                }}
                 className={`px-3 py-1.5 rounded text-sm ${tf === timeframe ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:text-white"}`}
               >{tf}</button>
             ))}

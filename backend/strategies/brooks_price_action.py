@@ -1744,18 +1744,36 @@ class BreakoutPullbackStrategy(BaseStrategy):
     )
 
     def default_params(self) -> dict:
-        return {"range_lookback": 15, "ema_period": 20, "quantity": 1}
+        return {
+            "range_lookback": 15,
+            "ema_period": 20,
+            "quantity": 1,
+            "min_breakout_body_ratio": 0.55,
+            "max_pullback_depth_ratio": 0.75,
+            "require_above_session_open": True,
+            "require_above_session_vwap": True,
+            "session_vwap_buffer_bps": 5.0,
+        }
 
     def generate_signals(self, symbol: str, bars: list[dict]) -> list[Signal]:
         lb = self.params.get("range_lookback", 15)
         ema_p = self.params.get("ema_period", 20)
         qty = self.params.get("quantity", 1)
+        min_breakout_body_ratio = self.params.get("min_breakout_body_ratio", 0.55)
+        max_pullback_depth_ratio = self.params.get("max_pullback_depth_ratio", 0.75)
+        require_above_session_open = self.params.get("require_above_session_open", True)
+        require_above_session_vwap = self.params.get("require_above_session_vwap", True)
+        session_vwap_buffer_bps = self.params.get("session_vwap_buffer_bps", 5.0)
         if len(bars) < max(lb, ema_p) + 5:
             return []
 
+        closes = [b["close"] for b in bars]
+        ema = _ema(closes, ema_p)
+        session_open = _session_open(bars)
+        session_vwap = _session_vwap(bars)
         signals = []
 
-        for i in range(lb + 3, len(bars)):
+        for i in range(max(lb + 3, ema_p + 3), len(bars)):
             window = bars[i - lb - 3:i - 3]
             if len(window) < lb:
                 continue
@@ -1763,16 +1781,67 @@ class BreakoutPullbackStrategy(BaseStrategy):
             rl = min(b["low"] for b in window)
 
             bo, pb, entry = bars[i - 2], bars[i - 1], bars[i]
+            breakout_range = _range(bo)
+            if breakout_range <= 0:
+                continue
+            ema_breakout = ema[i - 2]
+            ema_entry = ema[i]
+            ema_reference = ema[max(ema_p - 1, i - 3)]
+            ema_rising = ema_breakout > 0 and ema_reference > 0 and ema_breakout > ema_reference
+            ema_falling = ema_breakout > 0 and ema_reference > 0 and ema_breakout < ema_reference
+            vwap_buffer = session_vwap_buffer_bps / 10000.0
 
-            if _is_bull(bo) and _is_strong(bo, 0.5) and bo["close"] > rh:
-                if pb["low"] >= rh and _is_bull(entry) and entry["close"] > pb["high"]:
+            if (
+                _is_bull(bo)
+                and _body_ratio(bo) >= min_breakout_body_ratio
+                and bo["close"] > rh
+                and ema_rising
+                and bo["close"] > ema_breakout
+            ):
+                pullback_depth = bo["close"] - pb["low"]
+                if (
+                    pb["low"] >= rh
+                    and pullback_depth <= breakout_range * max_pullback_depth_ratio
+                    and _is_bull(entry)
+                    and entry["close"] > pb["high"]
+                    and entry["close"] > ema_entry
+                    and (
+                        not require_above_session_open
+                        or entry["close"] > session_open[i]
+                    )
+                    and (
+                        not require_above_session_vwap
+                        or entry["close"] >= session_vwap[i] * (1 + vwap_buffer)
+                    )
+                ):
                     signals.append(_make_signal(
                         symbol, SignalType.BUY, entry, qty,
                         f"Bull BO pullback: held above {rh:.2f}"
                     ))
 
-            if _is_bear(bo) and _is_strong(bo, 0.5) and bo["close"] < rl:
-                if pb["high"] <= rl and _is_bear(entry) and entry["close"] < pb["low"]:
+            if (
+                _is_bear(bo)
+                and _body_ratio(bo) >= min_breakout_body_ratio
+                and bo["close"] < rl
+                and ema_falling
+                and bo["close"] < ema_breakout
+            ):
+                pullback_depth = pb["high"] - bo["close"]
+                if (
+                    pb["high"] <= rl
+                    and pullback_depth <= breakout_range * max_pullback_depth_ratio
+                    and _is_bear(entry)
+                    and entry["close"] < pb["low"]
+                    and entry["close"] < ema_entry
+                    and (
+                        not require_above_session_open
+                        or entry["close"] < session_open[i]
+                    )
+                    and (
+                        not require_above_session_vwap
+                        or entry["close"] <= session_vwap[i] * (1 - vwap_buffer)
+                    )
+                ):
                     signals.append(_make_signal(
                         symbol, SignalType.SELL, entry, qty,
                         f"Bear BO pullback: held below {rl:.2f}"
