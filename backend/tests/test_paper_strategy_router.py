@@ -35,6 +35,7 @@ async def test_start_phase1_paper_strategy_forwards_request(monkeypatch):
         "fixed_quantity": 50,
         "stop_loss_pct": 1.5,
         "take_profit_pct": 3.5,
+        "exit_policy": None,
         "history_days": 8,
         "params": None,
     }
