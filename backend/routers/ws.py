@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from services.alpaca_client import AlpacaNotConfiguredError
 from services import market_data
 from services.trade_executor import add_trade_listener, remove_trade_listener
 
@@ -47,25 +48,41 @@ async def _broadcast_trade(trade_info: dict):
 async def market_ws(websocket: WebSocket, symbol: str):
     await websocket.accept()
     symbol = symbol.upper()
-    _market_subscribers.setdefault(symbol, set()).add(websocket)
-
-    # Subscribe to Alpaca real-time data and forward to this symbol's clients
-    await market_data.subscribe(symbol, _broadcast_bar)
+    subscribers = _market_subscribers.setdefault(symbol, set())
+    subscribers.add(websocket)
+    subscribed = False
 
     try:
+        # Subscribe to Alpaca real-time data and forward to this symbol's clients
+        await market_data.subscribe(symbol, _broadcast_bar)
+        subscribed = True
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
             if msg.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
+    except AlpacaNotConfiguredError:
+        subscribers.discard(websocket)
+        if not subscribers:
+            _market_subscribers.pop(symbol, None)
+        await websocket.send_json(
+            {
+                "type": "status",
+                "status": "degraded",
+                "reason": "alpaca_not_configured",
+            }
+        )
+        await websocket.close()
+        return
     except WebSocketDisconnect:
         pass
     finally:
-        _market_subscribers.get(symbol, set()).discard(websocket)
+        subscribers.discard(websocket)
         # If no more clients for this symbol, unsubscribe
-        if not _market_subscribers.get(symbol):
-            await market_data.unsubscribe(symbol, _broadcast_bar)
+        if not subscribers:
             _market_subscribers.pop(symbol, None)
+            if subscribed:
+                await market_data.unsubscribe(symbol, _broadcast_bar)
 
 
 @router.websocket("/ws/trades")

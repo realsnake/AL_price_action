@@ -7,6 +7,7 @@ interface StrategyPanelProps {
   timeframe: Timeframe;
   startDate: string;
   onSignals: (signals: Signal[]) => void;
+  disabledReason?: string | null;
 }
 
 export default function StrategyPanel({
@@ -14,22 +15,33 @@ export default function StrategyPanel({
   timeframe,
   startDate,
   onSignals,
+  disabledReason,
 }: StrategyPanelProps) {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [selected, setSelected] = useState("");
   const [params, setParams] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(false);
   const [signalCount, setSignalCount] = useState(0);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    getStrategies().then((list) => {
-      setStrategies(list);
-      if (list.length > 0) {
-        setSelected(list[0].name);
-        setParams(list[0].default_params);
-      }
-    });
-  }, []);
+    if (disabledReason) return;
+
+    getStrategies()
+      .then((list) => {
+        setStrategies(list);
+        setLoadError("");
+        if (list.length > 0) {
+          setSelected((prev) => prev || list[0].name);
+          setParams((prev) =>
+            Object.keys(prev).length > 0 ? prev : list[0].default_params,
+          );
+        }
+      })
+      .catch(() => {
+        setLoadError("Strategy catalog unavailable right now.");
+      });
+  }, [disabledReason]);
 
   const handleStrategyChange = (name: string) => {
     setSelected(name);
@@ -61,14 +73,25 @@ export default function StrategyPanel({
   const currentStrategy = strategies.find((s) => s.name === selected);
 
   return (
-    <div className="bg-gray-900 rounded-lg p-4 border border-gray-800 space-y-3">
-      <h3 className="text-sm font-medium text-gray-300">Strategy</h3>
+    <div className="space-y-3 rounded-2xl border border-white/10 bg-[#0b1524]/90 p-4 shadow-[0_18px_60px_-28px_rgba(15,23,42,0.95)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+            Scan
+          </p>
+          <h3 className="mt-2 text-sm font-semibold text-white">
+            Strategy explorer
+          </h3>
+        </div>
+        <p className="max-w-[150px] text-right text-[11px] text-slate-500">
+          {symbol} · {timeframe}
+        </p>
+      </div>
 
-      {/* Strategy Select */}
       <select
         value={selected}
         onChange={(e) => handleStrategyChange(e.target.value)}
-        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
+        className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white"
       >
         {strategies.map((s) => (
           <option key={s.name} value={s.name}>
@@ -78,19 +101,18 @@ export default function StrategyPanel({
       </select>
 
       {currentStrategy && (
-        <p className="text-xs text-gray-500">{currentStrategy.description}</p>
+        <p className="text-xs text-slate-400">{currentStrategy.description}</p>
       )}
 
-      {/* Params */}
       <div className="space-y-2">
         {Object.entries(params).map(([key, val]) => (
           <div key={key} className="flex items-center gap-2">
-            <label className="text-xs text-gray-400 w-24 shrink-0">{key}</label>
+            <label className="w-24 shrink-0 text-xs text-slate-400">{key}</label>
             <input
               type="number"
               value={String(val)}
               onChange={(e) => handleParamChange(key, e.target.value)}
-              className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm font-mono"
+              className="flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-sm font-mono text-white"
             />
           </div>
         ))}
@@ -98,14 +120,20 @@ export default function StrategyPanel({
 
       <button
         onClick={runStrategy}
-        disabled={loading}
-        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white py-2 rounded text-sm font-medium"
+        disabled={loading || Boolean(disabledReason) || strategies.length === 0}
+        className="w-full rounded-xl bg-cyan-500/90 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {loading ? "Running..." : "Run Strategy"}
       </button>
 
+      {disabledReason && (
+        <p className="text-xs text-amber-300">{disabledReason}</p>
+      )}
+      {!disabledReason && loadError && (
+        <p className="text-xs text-red-300">{loadError}</p>
+      )}
       {signalCount > 0 && (
-        <p className="text-xs text-gray-400">
+        <p className="text-xs text-slate-400">
           Found {signalCount} signal{signalCount > 1 ? "s" : ""}
         </p>
       )}
