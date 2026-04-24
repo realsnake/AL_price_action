@@ -127,6 +127,11 @@ export async function getPhase1PaperStrategyStatus(
   return data;
 }
 
+export async function getPhase1PaperStrategyStatuses(): Promise<PaperStrategyStatus[]> {
+  const { data } = await api.get("/paper-strategy/phase1/statuses");
+  return data;
+}
+
 export async function getPhase1PaperStrategyHistory(
   limit = 10,
   strategy?: Phase1StrategyName,
@@ -156,5 +161,12 @@ export async function startPhase1PaperStrategy(req?: {
 
 export async function stopPhase1PaperStrategy(): Promise<PaperStrategyStatus> {
   const { data } = await api.post("/paper-strategy/phase1/stop");
+  return data;
+}
+
+export async function stopNamedPhase1PaperStrategy(
+  strategy?: Phase1StrategyName,
+): Promise<PaperStrategyStatus> {
+  const { data } = await api.post("/paper-strategy/phase1/stop", strategy ? { strategy } : {});
   return data;
 }

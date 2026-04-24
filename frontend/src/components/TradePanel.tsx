@@ -41,6 +41,12 @@ export default function TradePanel({
   return (
     <div className="space-y-4 rounded-2xl border border-white/10 bg-[#0b1524]/90 p-4 shadow-[0_18px_60px_-28px_rgba(15,23,42,0.95)]">
       <PaperStrategyPanel
+        strategyName="brooks_small_pb_trend"
+        disabledReason={disabledReason}
+        onRunnerAction={onOrderPlaced}
+      />
+      <PaperStrategyPanel
+        strategyName="brooks_breakout_pullback"
         disabledReason={disabledReason}
         onRunnerAction={onOrderPlaced}
       />

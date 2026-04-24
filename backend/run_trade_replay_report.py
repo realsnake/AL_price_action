@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from services.alpaca_client import alpaca_client
 from services.analysis_bars import get_analysis_bars
+from services.research_profile import filter_bars_for_research_profile, get_research_profile
 from services.backtester import run_backtest
 from services.strategy_engine import get_strategy
 from services.trade_replay_report import write_trade_replay_report
@@ -35,17 +37,31 @@ LIMIT = (
 MAX_TRADE_DAYS = int(os.getenv("REPORT_MAX_TRADE_DAYS", "12"))
 PARAMS = json.loads(os.getenv("REPORT_PARAMS_JSON", "{}"))
 OUTPUT_ROOT = os.getenv("REPORT_OUTPUT_ROOT", "reports/trade_replays")
+DATA_SOURCE = os.getenv("REPORT_DATA_SOURCE", "cache").strip().lower()
 
 
 async def main() -> None:
-    bars = await get_analysis_bars(
-        symbol=SYMBOL,
-        timeframe=TIMEFRAME,
-        start=START,
-        end=END or None,
-        limit=LIMIT or 100000,
-        research_profile=RESEARCH_PROFILE,
-    )
+    if DATA_SOURCE == "alpaca":
+        profile = get_research_profile(RESEARCH_PROFILE)
+        bars = alpaca_client.get_bars(
+            symbol=SYMBOL,
+            timeframe=TIMEFRAME,
+            start=START,
+            end=END or None,
+            limit=LIMIT or 100000,
+        )
+        bars = filter_bars_for_research_profile(bars, profile)
+    elif DATA_SOURCE == "cache":
+        bars = await get_analysis_bars(
+            symbol=SYMBOL,
+            timeframe=TIMEFRAME,
+            start=START,
+            end=END or None,
+            limit=LIMIT or 100000,
+            research_profile=RESEARCH_PROFILE,
+        )
+    else:
+        raise ValueError(f"Unsupported REPORT_DATA_SOURCE: {DATA_SOURCE}")
     strategy = get_strategy(STRATEGY, PARAMS or None)
     signals = strategy.generate_signals(SYMBOL, bars)
     result = run_backtest(

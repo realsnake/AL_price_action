@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from services.alpaca_client import alpaca_client
 from services.bars_cache import get_bars_with_cache
 from services.research_profile import (
@@ -23,12 +25,13 @@ async def get_analysis_bars(
     profile = get_research_profile(research_profile)
     normalized_symbol = symbol.upper()
     if alpaca_client.is_crypto_symbol(normalized_symbol):
-        bars = alpaca_client.get_bars(
-            symbol=normalized_symbol,
-            timeframe=timeframe,
-            start=start,
-            end=end,
-            limit=limit,
+        bars = await asyncio.to_thread(
+            alpaca_client.get_bars,
+            normalized_symbol,
+            timeframe,
+            start,
+            end,
+            limit,
         )
     else:
         try:
@@ -42,11 +45,12 @@ async def get_analysis_bars(
         except RuntimeError as exc:
             if str(exc) != INCOMPLETE_BACKFILL_ERROR:
                 raise
-            bars = alpaca_client.get_bars(
-                symbol=normalized_symbol,
-                timeframe=timeframe,
-                start=start,
-                end=end,
-                limit=limit,
+            bars = await asyncio.to_thread(
+                alpaca_client.get_bars,
+                normalized_symbol,
+                timeframe,
+                start,
+                end,
+                limit,
             )
     return filter_bars_for_research_profile(bars, profile)

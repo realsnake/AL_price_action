@@ -39,6 +39,26 @@ class _SignalOnBarStrategy:
         ]
 
 
+@pytest.fixture(autouse=True)
+def disable_desired_runner_persistence(monkeypatch):
+    async def fake_set_desired(*args, **kwargs):
+        return None
+
+    async def fake_mark_inactive(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_set_desired_phase1_runner",
+        fake_set_desired,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_mark_desired_phase1_runner_inactive",
+        fake_mark_inactive,
+    )
+
+
 @pytest.mark.asyncio
 async def test_phase1_paper_runner_enters_on_completed_5m_signal_and_exits_on_session_close(monkeypatch):
     paper_strategy_runner.reset_phase1_paper_runner()
@@ -165,6 +185,105 @@ async def test_phase1_paper_runner_enters_on_completed_5m_signal_and_exits_on_se
 
     assert stopped["running"] is False
     assert unsubscribe_calls == [("QQQ", callback)]
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+
+@pytest.mark.asyncio
+async def test_phase1_paper_runner_allows_two_strategies_to_run_in_parallel(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    subscribed_callbacks: list[tuple[str, object]] = []
+    unsubscribed_callbacks: list[tuple[str, object]] = []
+
+    history_bars = [
+        _bar("2025-01-06T14:30:00+00:00", 500.0, 500.4, 499.8, 500.2),
+        _bar("2025-01-06T14:35:00+00:00", 500.2, 500.8, 500.0, 500.6),
+        _bar("2025-01-06T14:40:00+00:00", 500.6, 501.0, 500.5, 500.9),
+    ]
+
+    async def fake_get_analysis_bars(
+        symbol: str,
+        timeframe: str,
+        start: str,
+        end: str | None = None,
+        limit: int = 1000,
+        research_profile: str | None = None,
+    ) -> list[dict]:
+        return history_bars
+
+    async def fake_subscribe(symbol: str, callback):
+        subscribed_callbacks.append((symbol, callback))
+
+    async def fake_unsubscribe(symbol: str, callback):
+        unsubscribed_callbacks.append((symbol, callback))
+
+    async def fake_execute_order(
+        symbol: str,
+        qty: int,
+        side: str,
+        strategy: str | None = None,
+        reason: str | None = None,
+    ) -> dict:
+        return {
+            "status": "filled",
+            "qty": qty,
+            "price": 501.55 if side == "buy" else 501.85,
+            "alpaca_order_id": f"{strategy}-{side}",
+        }
+
+    async def fake_get_trade_history(limit=50):
+        return []
+
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
+    monkeypatch.setattr(paper_strategy_runner, "get_analysis_bars", fake_get_analysis_bars)
+    monkeypatch.setattr(paper_strategy_runner.market_data, "subscribe", fake_subscribe)
+    monkeypatch.setattr(paper_strategy_runner.market_data, "unsubscribe", fake_unsubscribe)
+    monkeypatch.setattr(paper_strategy_runner, "execute_order", fake_execute_order)
+    monkeypatch.setattr(paper_strategy_runner, "get_trade_history", fake_get_trade_history)
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "get_strategy",
+        lambda name, params=None: _SignalOnBarStrategy("2025-01-06T15:00:00+00:00"),
+    )
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_positions", lambda: [])
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_orders", lambda status="open": [])
+
+    small_pb_status = await paper_strategy_runner.start_phase1_paper_runner(
+        strategy="brooks_small_pb_trend",
+        fixed_quantity=25,
+    )
+    breakout_status = await paper_strategy_runner.start_phase1_paper_runner(
+        strategy="brooks_breakout_pullback",
+        fixed_quantity=10,
+    )
+
+    assert small_pb_status["running"] is True
+    assert breakout_status["running"] is True
+    assert len(subscribed_callbacks) == 2
+
+    statuses = paper_strategy_runner.get_phase1_paper_runner_statuses()
+    statuses_by_strategy = {status["strategy"]: status for status in statuses}
+    assert statuses_by_strategy["brooks_breakout_pullback"]["running"] is True
+    assert statuses_by_strategy["brooks_small_pb_trend"]["running"] is True
+    assert statuses_by_strategy["brooks_pullback_count"]["running"] is False
+
+    stopped_small_pb = await paper_strategy_runner.stop_phase1_paper_runner(
+        strategy="brooks_small_pb_trend",
+        close_position=False,
+    )
+
+    assert stopped_small_pb["running"] is False
+    assert paper_strategy_runner.get_phase1_paper_runner_status(
+        "brooks_breakout_pullback",
+    )["running"] is True
+
+    stopped_breakout = await paper_strategy_runner.stop_phase1_paper_runner(
+        strategy="brooks_breakout_pullback",
+        close_position=False,
+    )
+
+    assert stopped_breakout["running"] is False
+    assert len(unsubscribed_callbacks) == 2
     paper_strategy_runner.reset_phase1_paper_runner()
 
 
@@ -938,7 +1057,7 @@ async def test_phase1_paper_runner_consumes_trade_update_for_pending_entry(monke
     status = paper_strategy_runner.get_phase1_paper_runner_status()
     assert status["pending_order"]["alpaca_order_id"] == "ord-pending"
 
-    await paper_strategy_runner._phase1_runner._on_trade_update(
+    await paper_strategy_runner._phase1_runners["brooks_small_pb_trend"]._on_trade_update(
         {
             "type": "trade_update",
             "alpaca_order_id": "ord-pending",
@@ -1003,7 +1122,7 @@ async def test_phase1_paper_runner_status_warns_when_pending_order_is_stale(monk
     )
 
     await paper_strategy_runner.start_phase1_paper_runner(fixed_quantity=10)
-    paper_strategy_runner._phase1_runner.pending_order = paper_strategy_runner.PendingOrder(
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"].pending_order = paper_strategy_runner.PendingOrder(
         alpaca_order_id="ord-stale",
         side="buy",
         quantity=10,
@@ -1057,16 +1176,16 @@ async def test_phase1_paper_runner_status_warns_when_live_bars_go_stale_during_r
     monkeypatch.setattr(
         paper_strategy_runner,
         "_now_utc",
-        lambda: datetime.fromisoformat("2025-01-06T15:03:00+00:00"),
+        lambda: datetime.fromisoformat("2025-01-06T15:07:00+00:00"),
     )
 
     await paper_strategy_runner.start_phase1_paper_runner(fixed_quantity=10)
-    paper_strategy_runner._phase1_runner.started_at = "2025-01-06T15:00:00+00:00"
-    paper_strategy_runner._phase1_runner.last_live_bar_at = "2025-01-06T15:00:30+00:00"
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"].started_at = "2025-01-06T15:00:00+00:00"
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"].last_live_bar_at = "2025-01-06T15:00:30+00:00"
 
     status = paper_strategy_runner.get_phase1_paper_runner_status()
 
-    assert status["warnings"] == ["No live 1m bars observed for 150s during RTH"]
+    assert status["warnings"] == ["No live 1m bars observed for 390s during RTH"]
 
     await paper_strategy_runner.stop_phase1_paper_runner(close_position=False)
     paper_strategy_runner.reset_phase1_paper_runner()

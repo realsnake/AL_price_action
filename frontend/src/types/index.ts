@@ -149,6 +149,7 @@ export interface PaperStrategyReadiness {
   market_stream_running: boolean;
   trade_updates_running: boolean;
   runner_running: boolean;
+  active_strategies: Phase1StrategyName[];
   market_session: "open" | "closed";
   current_session_open: string | null;
   current_session_close: string | null;

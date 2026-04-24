@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 
 from alpaca.data.live import StockDataStream
 
@@ -14,6 +15,8 @@ logger = logging.getLogger(__name__)
 _callbacks: dict[str, list] = {}
 _stream: StockDataStream | None = None
 _stream_task: asyncio.Task | None = None
+_poll_task: asyncio.Task | None = None
+_last_polled_bar_times: dict[str, str] = {}
 
 
 def is_live_stream_enabled() -> bool:
@@ -21,7 +24,7 @@ def is_live_stream_enabled() -> bool:
 
 
 def is_stream_running() -> bool:
-    return _stream_task is not None and not _stream_task.done()
+    return _poll_task is not None and not _poll_task.done()
 
 
 async def _on_bar(bar):
@@ -97,31 +100,28 @@ def _unsubscribe_bars(stream: StockDataStream, symbol: str) -> None:
 
 
 async def start_stream():
-    """Start the Alpaca data stream in the background."""
-    global _stream_task
-    if _stream_task is not None:
+    """Start nonblocking market data delivery in the background."""
+    global _poll_task
+    if _poll_task is not None and not _poll_task.done():
         return
     if not is_live_stream_enabled():
         logger.warning("Alpaca stream disabled: credentials are not configured")
         return
 
-    stream = _get_stream()
-
-    async def _run():
-        try:
-            await stream._run_forever()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception("Alpaca stream error")
-
-    _stream_task = asyncio.create_task(_run())
-    logger.info("Alpaca data stream started")
+    _poll_task = asyncio.create_task(_poll_bars_loop())
+    logger.info("Alpaca market data polling started")
 
 
 async def stop_stream():
-    """Stop the Alpaca data stream."""
-    global _stream, _stream_task
+    """Stop market data delivery."""
+    global _stream, _stream_task, _poll_task
+    if _poll_task is not None:
+        _poll_task.cancel()
+        try:
+            await _poll_task
+        except asyncio.CancelledError:
+            pass
+        _poll_task = None
     if _stream_task is not None:
         _stream_task.cancel()
         try:
@@ -136,6 +136,45 @@ async def stop_stream():
             pass
         _stream = None
     logger.info("Alpaca data stream stopped")
+
+
+async def _poll_bars_loop() -> None:
+    while True:
+        try:
+            for symbol in list(_callbacks):
+                await _poll_latest_bar(symbol)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Alpaca market data polling error")
+        await asyncio.sleep(15)
+
+
+async def _poll_latest_bar(symbol: str) -> None:
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(hours=8)
+    bars = await asyncio.to_thread(
+        alpaca_client.get_bars,
+        symbol,
+        "1m",
+        start_dt.isoformat(),
+        end_dt.isoformat(),
+        500,
+    )
+    if not bars:
+        return
+
+    latest = bars[-1]
+    latest_time = str(latest.get("time"))
+    if _last_polled_bar_times.get(symbol) == latest_time:
+        return
+    _last_polled_bar_times[symbol] = latest_time
+
+    for cb in list(_callbacks.get(symbol, [])):
+        try:
+            await cb(symbol, latest)
+        except Exception:
+            logger.exception("Error in polled bar callback for %s", symbol)
 
 
 async def subscribe(symbol: str, callback):

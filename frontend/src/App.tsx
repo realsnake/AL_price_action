@@ -3,12 +3,37 @@ import Chart from "./components/Chart";
 import TradePanel from "./components/TradePanel";
 import StrategyPanel from "./components/StrategyPanel";
 import BacktestPanel from "./components/BacktestPanel";
+import { useOffline } from "./hooks/useOffline";
 import useMarketData from "./hooks/useMarketData";
+import useSystemStatus from "./hooks/useSystemStatus";
 import useWebSocket from "./hooks/useWebSocket";
-import { getBars, getAccount, getPositions } from "./services/api";
-import type { Bar, Signal, Account, Position, Timeframe } from "./types";
+import {
+  formatBeijingDate,
+  formatBeijingDateTime,
+  formatBeijingTime,
+} from "./utils/time";
+import {
+  getBars,
+  getAccount,
+  getPhase1PaperStrategyStatuses,
+  getPositions,
+} from "./services/api";
+import type {
+  Bar,
+  Signal,
+  Account,
+  Position,
+  Timeframe,
+  PaperStrategyStatus,
+} from "./types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "1D"];
+const MARKET_DAY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 
 function getDefaultStart(tf: Timeframe): string {
   const d = new Date();
@@ -30,6 +55,25 @@ function getDefaultStart(tf: Timeframe): string {
   return d.toISOString().split("T")[0];
 }
 
+function marketDayLabel(iso: string): string {
+  return MARKET_DAY_FORMATTER.format(new Date(iso));
+}
+
+function getPreviousSessionClose(bars: Bar[]): number | null {
+  if (bars.length < 2) {
+    return null;
+  }
+
+  const latestDay = marketDayLabel(bars[bars.length - 1].time);
+  for (let index = bars.length - 2; index >= 0; index -= 1) {
+    if (marketDayLabel(bars[index].time) !== latestDay) {
+      return bars[index].close;
+    }
+  }
+
+  return null;
+}
+
 type SidebarTab = "trade" | "backtest";
 type ChartRequest = {
   start: string;
@@ -49,13 +93,19 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notifications, setNotifications] = useState<string[]>([]);
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("backtest");
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("trade");
   const [equityCurve, setEquityCurve] = useState<{ time: string; equity: number }[]>([]);
+  const [paperRunnerStatuses, setPaperRunnerStatuses] = useState<PaperStrategyStatus[]>([]);
 
   const startDate = chartRequest?.start ?? getDefaultStart(timeframe);
   const barLimit = chartRequest?.limit ?? 500;
 
   const { lastBar, connected: marketConnected } = useMarketData(symbol);
+  const browserOffline = useOffline();
+  const systemStatus = useSystemStatus({
+    browserOnline: !browserOffline,
+    marketConnected,
+  });
 
   const onTradeMessage = useCallback(
     (raw: unknown) => {
@@ -64,6 +114,7 @@ export default function App() {
         const note = `${msg.side.toUpperCase()} ${msg.qty} ${msg.symbol} - ${msg.status}`;
         setNotifications((prev) => [note, ...prev].slice(0, 10));
         fetchAccountData();
+        fetchPaperRunnerStatuses();
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -114,6 +165,15 @@ export default function App() {
     }
   }, []);
 
+  const fetchPaperRunnerStatuses = useCallback(async () => {
+    try {
+      const next = await getPhase1PaperStrategyStatuses();
+      setPaperRunnerStatuses(next);
+    } catch {
+      // secondary
+    }
+  }, []);
+
   useEffect(() => {
     fetchBars();
   }, [fetchBars]);
@@ -121,6 +181,14 @@ export default function App() {
   useEffect(() => {
     fetchAccountData();
   }, [fetchAccountData]);
+
+  useEffect(() => {
+    fetchPaperRunnerStatuses();
+    const id = window.setInterval(() => {
+      void fetchPaperRunnerStatuses();
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [fetchPaperRunnerStatuses]);
 
   const handleSymbolSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,6 +204,64 @@ export default function App() {
   const dismissNotification = (index: number) => {
     setNotifications((prev) => prev.filter((_, i) => i !== index));
   };
+
+  const activeRunners = paperRunnerStatuses.filter((runnerStatus) => runnerStatus.running);
+  const spotlightRunner =
+    activeRunners.find((runnerStatus) => runnerStatus.position != null)
+    ?? activeRunners[0]
+    ?? paperRunnerStatuses[0]
+    ?? null;
+  const activeRunnerPosition = spotlightRunner?.symbol
+    ? positions.find((position) => position.symbol === spotlightRunner.symbol)
+    : undefined;
+  const latestRunnerEvent = spotlightRunner?.recent_events.at(-1);
+  const runnerPnLText = activeRunnerPosition
+    ? `${activeRunnerPosition.unrealized_pnl >= 0 ? "+" : ""}$${activeRunnerPosition.unrealized_pnl.toFixed(2)} (${activeRunnerPosition.unrealized_pnl_pct.toFixed(2)}%)`
+    : "No open runner position";
+  const runnerPnLClass = activeRunnerPosition
+    ? activeRunnerPosition.unrealized_pnl >= 0
+      ? "text-emerald-300"
+      : "text-rose-300"
+    : "text-slate-300";
+  const executionPulseMessage = spotlightRunner?.pending_order
+    ? `${spotlightRunner.pending_order.side.toUpperCase()} ${spotlightRunner.pending_order.quantity} pending`
+    : spotlightRunner?.last_live_bar_at
+      ? `Last live bar ${formatBeijingTime(spotlightRunner.last_live_bar_at)} · ${activeRunners.map((runnerStatus) => runnerStatus.strategy).join(" + ")}`
+      : "Live bar feed still warming up";
+  const dayPnLClass =
+    account == null
+      ? "text-slate-300"
+      : account.pnl >= 0
+        ? "text-emerald-300"
+        : "text-rose-300";
+  const latestBar = bars.length > 0 ? bars[bars.length - 1] : null;
+  const previousSessionClose =
+    latestBar != null ? getPreviousSessionClose(bars) : null;
+  const priceDelta =
+    latestBar != null && previousSessionClose != null
+      ? latestBar.close - previousSessionClose
+      : null;
+  const priceDeltaPct =
+    priceDelta != null && previousSessionClose != null && previousSessionClose !== 0
+      ? (priceDelta / previousSessionClose) * 100
+      : null;
+  const priceToneClass =
+    latestBar == null
+      ? "text-slate-300"
+      : priceDelta == null
+        ? latestBar.close >= latestBar.open
+          ? "text-green-400"
+          : "text-red-400"
+        : priceDelta >= 0
+          ? "text-green-400"
+          : "text-red-400";
+  const spotlightTone = spotlightRunner?.running
+    ? activeRunnerPosition
+      ? activeRunnerPosition.unrealized_pnl >= 0
+        ? "border-emerald-400/25 bg-emerald-400/[0.08]"
+        : "border-rose-400/25 bg-rose-400/[0.08]"
+      : "border-cyan-400/25 bg-cyan-400/[0.08]"
+    : "border-white/10 bg-white/[0.03]";
 
   const activateResearchContext = useCallback((request?: ChartRequest) => {
     const switchingChart = symbol !== "QQQ" || timeframe !== "5m";
@@ -159,8 +285,24 @@ export default function App() {
         <h1 className="text-lg font-semibold text-white">Stock Trader</h1>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${marketConnected ? "bg-green-400" : "bg-red-400"}`} />
-            <span className="text-xs text-gray-500">{marketConnected ? "Live" : "Offline"}</span>
+            <div
+              className={`w-2 h-2 rounded-full ${
+                systemStatus.mode === "live"
+                  ? "bg-green-400"
+                  : systemStatus.mode === "syncing" || systemStatus.mode === "standby"
+                    ? "bg-amber-400"
+                    : "bg-red-400"
+              }`}
+            />
+            <span className="text-xs text-gray-500">
+              {systemStatus.mode === "live"
+                ? "Live"
+                : systemStatus.mode === "syncing"
+                  ? "Syncing"
+                  : systemStatus.mode === "standby"
+                    ? "Standby"
+                    : "Offline"}
+            </span>
           </div>
 
           <form onSubmit={handleSymbolSubmit} className="flex gap-2">
@@ -207,12 +349,88 @@ export default function App() {
       <div className="flex h-[calc(100vh-57px)]">
         {/* Chart Area */}
         <main className="flex-1 p-4 flex flex-col gap-4 overflow-auto">
+          <section className={`rounded-2xl border p-4 ${spotlightTone}`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">
+                  Paper Runner Spotlight
+                </p>
+                <h2 className="mt-2 text-base font-semibold text-white">
+                  {spotlightRunner?.running
+                    ? `${activeRunners.length} phase-1 runners live on ${spotlightRunner.symbol}`
+                    : "Phase-1 paper runner is idle"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-300">
+                  {latestRunnerEvent?.message ?? "Waiting for the next 5 minute decision bar."}
+                </p>
+              </div>
+              <span
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  spotlightRunner?.running
+                    ? "bg-cyan-400/15 text-cyan-200"
+                    : "bg-slate-500/15 text-slate-300"
+                }`}
+              >
+                {spotlightRunner?.running ? "RUNNING" : "STOPPED"}
+              </span>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Account Day P&L
+                </p>
+                <p className={`mt-2 text-2xl font-semibold ${dayPnLClass}`}>
+                  {account == null
+                    ? "n/a"
+                    : `${account.pnl >= 0 ? "+" : ""}$${account.pnl.toFixed(2)}`}
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {account == null ? "Account snapshot pending" : `${account.pnl_pct.toFixed(2)}% vs prior equity`}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Combined Runner Position P&L
+                </p>
+                <p className={`mt-2 text-2xl font-semibold ${runnerPnLClass}`}>
+                  {runnerPnLText}
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {activeRunnerPosition
+                    ? `${activeRunnerPosition.qty} shares @ $${activeRunnerPosition.avg_entry.toFixed(2)}`
+                    : "No active QQQ paper position yet"}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Execution Pulse
+                </p>
+                <p className="mt-2 text-base font-semibold text-white">
+                  {activeRunners.reduce((sum, runnerStatus) => sum + runnerStatus.orders_submitted, 0)} orders submitted
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {executionPulseMessage}
+                </p>
+              </div>
+            </div>
+          </section>
+
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold text-white">{symbol}</h2>
-            {bars.length > 0 && (
-              <span className={`text-lg font-mono ${bars[bars.length - 1].close >= bars[bars.length - 1].open ? "text-green-400" : "text-red-400"}`}>
-                ${bars[bars.length - 1].close.toFixed(2)}
-              </span>
+            {latestBar != null && (
+              <>
+                <span className={`text-lg font-mono ${priceToneClass}`}>
+                  ${latestBar.close.toFixed(2)}
+                </span>
+                {priceDelta != null && priceDeltaPct != null && (
+                  <span className={`text-sm font-mono ${priceToneClass}`}>
+                    {priceDelta >= 0 ? "+" : ""}{priceDelta.toFixed(2)} ({priceDeltaPct >= 0 ? "+" : ""}{priceDeltaPct.toFixed(2)}%)
+                  </span>
+                )}
+              </>
             )}
             {loading && <span className="text-sm text-gray-500">Loading...</span>}
           </div>
@@ -250,9 +468,9 @@ export default function App() {
                 })()}
               </div>
               <div className="flex justify-between text-xs text-gray-600 mt-1">
-                <span>{equityCurve[0].time.slice(0, 10)}</span>
+                <span>{formatBeijingDate(equityCurve[0].time)}</span>
                 <span>${equityCurve[equityCurve.length - 1].equity.toLocaleString()}</span>
-                <span>{equityCurve[equityCurve.length - 1].time.slice(0, 10)}</span>
+                <span>{formatBeijingDate(equityCurve[equityCurve.length - 1].time)}</span>
               </div>
             </div>
           )}
@@ -273,7 +491,7 @@ export default function App() {
                 <tbody>
                   {signals.slice(-20).reverse().map((s, i) => (
                     <tr key={i} className="border-b border-gray-800/50">
-                      <td className="px-4 py-2 font-mono text-gray-400">{new Date(s.timestamp).toLocaleDateString()}</td>
+                      <td className="px-4 py-2 font-mono text-gray-400">{formatBeijingDateTime(s.timestamp)}</td>
                       <td className="px-4 py-2">
                         <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.signal_type === "buy" ? "bg-green-900/50 text-green-400" : "bg-red-900/50 text-red-400"}`}>
                           {s.signal_type.toUpperCase()}

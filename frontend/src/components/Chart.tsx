@@ -12,8 +12,10 @@ import {
   type ISeriesMarkersPluginApi,
   ColorType,
   CrosshairMode,
+  TickMarkType,
 } from "lightweight-charts";
 import type { Bar, Signal } from "../types";
+import { formatBeijingDateTime } from "../utils/time";
 
 interface ChartProps {
   bars: Bar[];
@@ -23,6 +25,72 @@ interface ChartProps {
 
 function toChartTime(iso: string): Time {
   return (new Date(iso).getTime() / 1000) as Time;
+}
+
+const BEIJING_TIME_ZONE = "Asia/Shanghai";
+
+const beijingAxisFormatters = {
+  year: new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
+    year: "numeric",
+  }),
+  month: new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+  }),
+  day: new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
+    month: "2-digit",
+    day: "2-digit",
+  }),
+  minute: new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }),
+  second: new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }),
+};
+
+function chartTimeToDate(time: Time): Date | null {
+  if (typeof time === "number") {
+    return new Date(time * 1000);
+  }
+  if (typeof time === "string") {
+    return new Date(`${time}T00:00:00Z`);
+  }
+  if ("year" in time && "month" in time && "day" in time) {
+    return new Date(Date.UTC(time.year, time.month - 1, time.day));
+  }
+  return null;
+}
+
+function formatBeijingAxisTick(time: Time, tickMarkType: TickMarkType): string {
+  const date = chartTimeToDate(time);
+  if (date == null || Number.isNaN(date.getTime())) {
+    return String(time);
+  }
+
+  switch (tickMarkType) {
+    case TickMarkType.Year:
+      return beijingAxisFormatters.year.format(date);
+    case TickMarkType.Month:
+      return beijingAxisFormatters.month.format(date);
+    case TickMarkType.DayOfMonth:
+      return beijingAxisFormatters.day.format(date);
+    case TickMarkType.TimeWithSeconds:
+      return beijingAxisFormatters.second.format(date);
+    case TickMarkType.Time:
+    default:
+      return beijingAxisFormatters.minute.format(date);
+  }
 }
 
 export default function Chart({ bars, signals, height = 500 }: ChartProps) {
@@ -57,6 +125,14 @@ export default function Chart({ bars, signals, height = 500 }: ChartProps) {
         borderColor: "#2d3348",
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: (time: Time, tickMarkType: TickMarkType) =>
+          formatBeijingAxisTick(time, tickMarkType),
+      },
+      localization: {
+        timeFormatter: (time: Time) =>
+          typeof time === "number"
+            ? formatBeijingDateTime(new Date(time * 1000).toISOString())
+            : String(time),
       },
     });
 

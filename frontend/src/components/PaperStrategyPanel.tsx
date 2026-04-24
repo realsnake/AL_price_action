@@ -3,8 +3,9 @@ import {
   getPhase1PaperStrategyHistory,
   getPhase1PaperStrategyReadiness,
   getPhase1PaperStrategyStatus,
+  getPhase1PaperStrategyStatuses,
   startPhase1PaperStrategy,
-  stopPhase1PaperStrategy,
+  stopNamedPhase1PaperStrategy,
 } from "../services/api";
 import type {
   Phase1StrategyName,
@@ -13,8 +14,10 @@ import type {
   TradeHistoryEntry,
 } from "../types";
 import useWebSocket from "../hooks/useWebSocket";
+import { formatBeijingDateTime, formatBeijingTime } from "../utils/time";
 
 interface PaperStrategyPanelProps {
+  strategyName?: Phase1StrategyName;
   disabledReason?: string | null;
   onRunnerAction?: () => void;
 }
@@ -43,6 +46,7 @@ const PHASE1_STRATEGY_META: Record<
 };
 
 export default function PaperStrategyPanel({
+  strategyName,
   disabledReason,
   onRunnerAction,
 }: PaperStrategyPanelProps) {
@@ -54,27 +58,42 @@ export default function PaperStrategyPanel({
   const [fixedQuantity, setFixedQuantity] = useState(100);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const lockedStrategy = strategyName ?? null;
+
+  useEffect(() => {
+    if (lockedStrategy != null) {
+      setSelectedStrategy(lockedStrategy);
+    }
+  }, [lockedStrategy]);
 
   const refreshStatus = useCallback(async (
-    strategy: Phase1StrategyName = selectedStrategy,
+    strategy: Phase1StrategyName = lockedStrategy ?? selectedStrategy,
   ) => {
     try {
-      const [next, history, readinessInfo] = await Promise.all([
+      const [next, history, readinessInfo, allStatuses] = await Promise.all([
         getPhase1PaperStrategyStatus(strategy),
         getPhase1PaperStrategyHistory(8, strategy),
         getPhase1PaperStrategyReadiness(),
+        getPhase1PaperStrategyStatuses(),
       ]);
       setStatus(next);
       setRecentTrades(history);
-      setReadiness(readinessInfo);
+      setReadiness({
+        ...readinessInfo,
+        active_strategies: allStatuses
+          .filter((runnerStatus) => runnerStatus.running)
+          .map((runnerStatus) => runnerStatus.strategy),
+      });
       setFixedQuantity(next.fixed_quantity);
-      setSelectedStrategy(next.strategy);
+      if (lockedStrategy == null) {
+        setSelectedStrategy(next.strategy);
+      }
       setError("");
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Failed to load paper strategy status";
       setError(message);
     }
-  }, [selectedStrategy]);
+  }, [lockedStrategy, selectedStrategy]);
 
   useWebSocket({
     url: "/ws/trades",
@@ -87,20 +106,20 @@ export default function PaperStrategyPanel({
       if (
         (msg.type === "trade" || msg.type === "trade_update") &&
         msg.symbol === "QQQ" &&
-        msg.strategy === selectedStrategy
+        msg.strategy === (lockedStrategy ?? selectedStrategy)
       ) {
-        void refreshStatus(selectedStrategy);
+        void refreshStatus(lockedStrategy ?? selectedStrategy);
       }
     },
   });
 
   useEffect(() => {
-    void refreshStatus(selectedStrategy);
+    void refreshStatus(lockedStrategy ?? selectedStrategy);
     const id = window.setInterval(() => {
-      void refreshStatus(selectedStrategy);
+      void refreshStatus(lockedStrategy ?? selectedStrategy);
     }, 15000);
     return () => window.clearInterval(id);
-  }, [selectedStrategy, refreshStatus]);
+  }, [lockedStrategy, selectedStrategy, refreshStatus]);
 
   const canStart = useMemo(
     () => !loading && !status?.running && !disabledReason,
@@ -117,11 +136,11 @@ export default function PaperStrategyPanel({
     setError("");
     try {
       const next = await startPhase1PaperStrategy({
-        strategy: selectedStrategy,
+        strategy: lockedStrategy ?? selectedStrategy,
         fixed_quantity: fixedQuantity,
       });
       setStatus(next);
-      void refreshStatus(selectedStrategy);
+      void refreshStatus(lockedStrategy ?? selectedStrategy);
       onRunnerAction?.();
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Failed to start paper strategy";
@@ -135,7 +154,9 @@ export default function PaperStrategyPanel({
     setLoading(true);
     setError("");
     try {
-      const next = await stopPhase1PaperStrategy();
+      const next = await stopNamedPhase1PaperStrategy(
+        lockedStrategy ?? selectedStrategy,
+      );
       setStatus(next);
       void refreshStatus(next.strategy);
       onRunnerAction?.();
@@ -148,8 +169,8 @@ export default function PaperStrategyPanel({
   };
 
   const formatTimestamp = (value: string | null) =>
-    value ? new Date(value).toLocaleString() : "n/a";
-  const strategyMeta = PHASE1_STRATEGY_META[status?.strategy ?? selectedStrategy];
+    formatBeijingDateTime(value);
+  const strategyMeta = PHASE1_STRATEGY_META[status?.strategy ?? (lockedStrategy ?? selectedStrategy)];
 
   return (
     <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4">
@@ -184,7 +205,7 @@ export default function PaperStrategyPanel({
           <select
             value={selectedStrategy}
             onChange={(e) => setSelectedStrategy(e.target.value as Phase1StrategyName)}
-            disabled={Boolean(status?.running)}
+            disabled={Boolean(status?.running) || lockedStrategy != null}
             className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
             {(
@@ -306,7 +327,9 @@ export default function PaperStrategyPanel({
             <div className="rounded-lg border border-white/5 bg-black/10 px-2.5 py-2 text-slate-300">
               Runner:{" "}
               <span className={readiness.runner_running ? "text-cyan-300" : "text-slate-300"}>
-                {readiness.runner_running ? "active" : "idle"}
+                {readiness.runner_running
+                  ? `${readiness.active_strategies.length} active`
+                  : "idle"}
               </span>
             </div>
           </div>
@@ -402,7 +425,7 @@ export default function PaperStrategyPanel({
                     {event.type.replaceAll("_", " ")}
                   </span>
                   <span className="text-[11px] font-mono text-slate-500">
-                    {new Date(event.timestamp).toLocaleTimeString()}
+                    {formatBeijingTime(event.timestamp)}
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-slate-300">{event.message}</p>

@@ -7,6 +7,10 @@ from database import init_db
 from routers import market, trading, strategy, ws, backtest, paper_strategy
 from services.alpaca_client import alpaca_client
 from services import market_data, trade_updates
+from services.paper_strategy_runner import (
+    start_phase1_paper_runner_monitor,
+    stop_phase1_paper_runner_monitor,
+)
 
 
 @asynccontextmanager
@@ -14,7 +18,9 @@ async def lifespan(app: FastAPI):
     await init_db()
     await market_data.start_stream()
     await trade_updates.start_trade_updates_stream()
+    await start_phase1_paper_runner_monitor()
     yield
+    await stop_phase1_paper_runner_monitor()
     await trade_updates.stop_trade_updates_stream()
     await market_data.stop_stream()
 

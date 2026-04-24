@@ -10,6 +10,7 @@ from services.paper_strategy_runner import (
     get_phase1_paper_runner_history,
     get_phase1_paper_runner_readiness,
     get_phase1_paper_runner_status,
+    get_phase1_paper_runner_statuses,
     start_phase1_paper_runner,
     stop_phase1_paper_runner,
 )
@@ -33,11 +34,20 @@ class StartPhase1PaperRequest(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 
+class StopPhase1PaperRequest(BaseModel):
+    strategy: Optional[Literal["brooks_small_pb_trend", "brooks_breakout_pullback"]] = None
+
+
 @router.get("/phase1/status")
 def get_phase1_paper_strategy_status(
     strategy: Optional[Phase1Strategy] = None,
 ):
     return get_phase1_paper_runner_status(strategy=strategy)
+
+
+@router.get("/phase1/statuses")
+def get_phase1_paper_strategy_statuses():
+    return get_phase1_paper_runner_statuses()
 
 
 @router.get("/phase1/history")
@@ -74,8 +84,12 @@ async def start_phase1_paper_strategy(req: StartPhase1PaperRequest):
 
 
 @router.post("/phase1/stop")
-async def stop_phase1_paper_strategy():
+async def stop_phase1_paper_strategy(req: StopPhase1PaperRequest | None = None):
     try:
-        return await stop_phase1_paper_runner()
+        return await stop_phase1_paper_runner(strategy=None if req is None else req.strategy)
     except AlpacaNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

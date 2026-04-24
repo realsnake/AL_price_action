@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -86,7 +87,10 @@ async def _refresh_trades_from_broker(session: AsyncSession, trades: list[Trade]
         if not trade.alpaca_order_id:
             continue
         try:
-            order = alpaca_client.get_order_by_id(trade.alpaca_order_id)
+            order = await asyncio.to_thread(
+                alpaca_client.get_order_by_id,
+                trade.alpaca_order_id,
+            )
         except AlpacaNotConfiguredError:
             return
         except Exception:
@@ -123,7 +127,7 @@ async def refresh_trade_statuses(
 
 async def execute_order(symbol: str, qty: int, side: str, strategy: str | None = None, reason: str | None = None) -> dict:
     """Execute an order via Alpaca and record it in the database."""
-    result = alpaca_client.submit_order(symbol, qty, side)
+    result = await asyncio.to_thread(alpaca_client.submit_order, symbol, qty, side)
 
     async with async_session() as session:
         trade = Trade(

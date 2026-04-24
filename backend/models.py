@@ -44,3 +44,20 @@ class BarCache(Base):
     low: Mapped[float] = mapped_column(Float)
     close: Mapped[float] = mapped_column(Float)
     volume: Mapped[int] = mapped_column(Integer)
+
+
+class PaperRunnerConfig(Base):
+    __tablename__ = "paper_runner_configs"
+
+    strategy: Mapped[str] = mapped_column(String(50), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(10), nullable=False, default="QQQ")
+    timeframe: Mapped[str] = mapped_column(String(5), nullable=False, default="5m")
+    research_profile: Mapped[str] = mapped_column(String(50), nullable=False, default="qqq_5m_phase1")
+    fixed_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    stop_loss_pct: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)
+    take_profit_pct: Mapped[float] = mapped_column(Float, nullable=False, default=4.0)
+    exit_policy: Mapped[Optional[str]] = mapped_column(String(50))
+    history_days: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    params: Mapped[Optional[str]] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

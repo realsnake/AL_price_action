@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getStrategies, runBacktest } from "../services/api";
+import { formatBeijingDateTime } from "../utils/time";
 import type {
   StrategyInfo,
   BacktestResult,
@@ -443,7 +444,7 @@ function BacktestResultCard({ result: r }: { result: BacktestResult }) {
             <tbody>
               {r.trades.map((t, i) => (
                 <tr key={i} className="border-b border-gray-800/50">
-                  <td className="px-3 py-1 font-mono text-gray-400">{t.entry_time.slice(0, 10)}</td>
+                  <td className="px-3 py-1 font-mono text-gray-400">{formatBeijingDateTime(t.entry_time)}</td>
                   <td className="px-3 py-1">
                     <span className={t.side === "long" ? "text-green-400" : "text-red-400"}>
                       {t.side.toUpperCase()}

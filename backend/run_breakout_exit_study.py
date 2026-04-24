@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from services.alpaca_client import alpaca_client
 from services.phase1_exit import BREAKOUT_EXIT_POLICIES
 from services.phase1_exit import PULLBACK_COUNT_EXIT_POLICIES
 from services.research_validation import build_strategy_validation_report
@@ -34,6 +35,7 @@ LIMIT = (
     if os.getenv("STUDY_LIMIT", "").strip().lower() in {"", "none", "all"}
     else int(os.getenv("STUDY_LIMIT", "50000"))
 )
+DATA_SOURCE = os.getenv("STUDY_DATA_SOURCE", "cache").strip().lower()
 
 
 def policies_for_strategy(strategy_name: str) -> tuple[str, ...]:
@@ -57,7 +59,7 @@ DB_PATH = Path(os.getenv("STUDY_DB_PATH", Path(__file__).with_name("trader.db"))
 
 def main() -> None:
     profile = get_research_profile(RESEARCH_PROFILE)
-    bars = _load_cached_bars(
+    bars = _load_bars(
         symbol=SYMBOL,
         timeframe=TIMEFRAME,
         start=START,
@@ -243,6 +245,33 @@ def _ratio(numerator: float, denominator: float) -> float:
     if denominator <= 0:
         return 0.0
     return numerator / denominator
+
+
+def _load_bars(
+    *,
+    symbol: str,
+    timeframe: str,
+    start: str,
+    end: str | None,
+    limit: int | None,
+) -> list[dict]:
+    if DATA_SOURCE == "alpaca":
+        return alpaca_client.get_bars(
+            symbol=symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+    if DATA_SOURCE != "cache":
+        raise ValueError(f"Unsupported STUDY_DATA_SOURCE: {DATA_SOURCE}")
+    return _load_cached_bars(
+        symbol=symbol,
+        timeframe=timeframe,
+        start=start,
+        end=end,
+        limit=limit,
+    )
 
 
 def _load_cached_bars(

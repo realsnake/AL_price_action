@@ -13,12 +13,18 @@ class OrderRequest(BaseModel):
     side: str  # "buy" or "sell"
 
 
+def _broker_unavailable_http_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail=f"Broker unavailable: {exc}")
+
+
 @router.get("/account")
 def get_account():
     try:
         return alpaca_client.get_account()
     except AlpacaNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _broker_unavailable_http_error(exc) from exc
 
 
 @router.get("/positions")
@@ -27,6 +33,8 @@ def get_positions():
         return alpaca_client.get_positions()
     except AlpacaNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _broker_unavailable_http_error(exc) from exc
 
 
 @router.get("/orders")
@@ -35,6 +43,8 @@ def get_orders(status: str = "open"):
         return alpaca_client.get_orders(status)
     except AlpacaNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _broker_unavailable_http_error(exc) from exc
 
 
 @router.post("/order")
@@ -57,7 +67,7 @@ def cancel_order(order_id: str):
     except AlpacaNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as e:
-        raise HTTPException(400, str(e))
+        raise _broker_unavailable_http_error(e) from e
 
 
 @router.get("/history")

@@ -151,6 +151,28 @@ def test_trading_routes_return_503_when_alpaca_unavailable(
     assert response.json() == {"detail": "Alpaca credentials are not configured"}
 
 
+@pytest.mark.parametrize(
+    "path,patch_name",
+    [
+        ("/api/trading/account", "get_account"),
+        ("/api/trading/positions", "get_positions"),
+        ("/api/trading/orders?status=open", "get_orders"),
+    ],
+)
+def test_trading_snapshot_routes_return_503_when_broker_times_out(
+    client, monkeypatch, path, patch_name
+):
+    def _raise_timeout(*args, **kwargs):
+        raise TimeoutError("paper api timed out")
+
+    monkeypatch.setattr(trading_router.alpaca_client, patch_name, _raise_timeout)
+
+    response = client.get(path)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Broker unavailable: paper api timed out"}
+
+
 def test_strategy_signals_returns_503_when_analysis_bars_need_alpaca(
     client, monkeypatch
 ):

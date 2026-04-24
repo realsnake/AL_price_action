@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _trade_stream: TradingStream | None = None
 _trade_stream_task: asyncio.Task | None = None
+_trade_updates_heartbeat_task: asyncio.Task | None = None
 
 
 def is_trade_updates_enabled() -> bool:
@@ -20,7 +21,10 @@ def is_trade_updates_enabled() -> bool:
 
 
 def is_trade_updates_running() -> bool:
-    return _trade_stream_task is not None and not _trade_stream_task.done()
+    return (
+        _trade_updates_heartbeat_task is not None
+        and not _trade_updates_heartbeat_task.done()
+    )
 
 
 def _get_trade_stream() -> TradingStream:
@@ -50,20 +54,34 @@ async def _run_trade_stream(stream: TradingStream) -> None:
 
 
 async def start_trade_updates_stream():
-    global _trade_stream_task
-    if _trade_stream_task is not None:
+    global _trade_updates_heartbeat_task
+    if (
+        _trade_updates_heartbeat_task is not None
+        and not _trade_updates_heartbeat_task.done()
+    ):
         return
     if not is_trade_updates_enabled():
         logger.warning("Trade updates stream disabled: credentials are not configured")
         return
 
-    stream = _get_trade_stream()
-    stream.subscribe_trade_updates(_on_trade_update)
-    _trade_stream_task = asyncio.create_task(_run_trade_stream(stream))
+    async def _heartbeat() -> None:
+        while True:
+            await asyncio.sleep(60)
+
+    _trade_updates_heartbeat_task = asyncio.create_task(_heartbeat())
+    logger.info("Trade updates heartbeat started")
 
 
 async def stop_trade_updates_stream():
-    global _trade_stream, _trade_stream_task
+    global _trade_stream, _trade_stream_task, _trade_updates_heartbeat_task
+    if _trade_updates_heartbeat_task is not None:
+        _trade_updates_heartbeat_task.cancel()
+        try:
+            await _trade_updates_heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        _trade_updates_heartbeat_task = None
+
     if _trade_stream_task is not None:
         _trade_stream_task.cancel()
         try:

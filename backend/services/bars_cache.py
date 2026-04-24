@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
@@ -73,8 +74,13 @@ async def get_bars_with_cache(
             raise AlpacaNotConfiguredError("Alpaca credentials are not configured")
 
         fetch_start = _normalize_timestamp(fetch_start or start_dt)
-        new_bars = alpaca_client.get_bars(
-            symbol, timeframe, fetch_start.isoformat(), end_dt.isoformat(), limit
+        new_bars = await asyncio.to_thread(
+            alpaca_client.get_bars,
+            symbol,
+            timeframe,
+            fetch_start.isoformat(),
+            end_dt.isoformat(),
+            limit,
         )
         if new_bars:
             await _upsert_bars(session, symbol, timeframe, new_bars)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import json
 import logging
 from dataclasses import asdict
 from dataclasses import dataclass
@@ -10,7 +11,11 @@ from datetime import timedelta
 from datetime import timezone
 from typing import Any
 
+from sqlalchemy import select
+
 from config import PAPER_TRADING
+from database import async_session
+from models import PaperRunnerConfig
 from services import market_data, trade_updates
 from services.alpaca_client import alpaca_client
 from services.analysis_bars import get_analysis_bars
@@ -419,17 +424,23 @@ class Phase1PaperRunner:
         )
 
     async def _restore_broker_state(self) -> None:
-        recent_trades = await get_trade_history(limit=25)
-        strategy_trades = [
-            trade
-            for trade in recent_trades
-            if trade.get("symbol") == self.config.symbol
-            and trade.get("strategy") == self.config.strategy
-        ]
+        recent_trades = await get_trade_history(limit=200)
+        strategy_trades = sorted(
+            (
+                trade
+                for trade in recent_trades
+                if trade.get("symbol") == self.config.symbol
+                and trade.get("strategy") == self.config.strategy
+            ),
+            key=lambda trade: (
+                trade.get("created_at") or "",
+                int(trade.get("id") or 0),
+            ),
+        )
 
         open_orders = {
             order["id"]: order
-            for order in alpaca_client.get_orders("open")
+            for order in await asyncio.to_thread(alpaca_client.get_orders, "open")
             if order.get("symbol") == self.config.symbol
         }
         recovered_pending = next(
@@ -466,26 +477,50 @@ class Phase1PaperRunner:
                 f"Recovered {self.pending_order.side} order {self.pending_order.alpaca_order_id}",
             )
 
-        broker_position = next(
-            (
-                position
-                for position in alpaca_client.get_positions()
-                if position.get("symbol") == self.config.symbol
-                and int(float(position.get("qty", 0))) > 0
-            ),
-            None,
-        )
-        if broker_position is None:
+        recovered_buys: list[dict] = []
+        recovered_quantity = 0
+        for trade in strategy_trades:
+            if trade.get("status") != "filled":
+                continue
+            side = str(trade.get("side") or "")
+            quantity = int(float(trade.get("quantity") or 0))
+            if side == "buy":
+                recovered_buys.append(trade)
+                recovered_quantity += quantity
+            elif side == "sell":
+                if quantity >= recovered_quantity:
+                    recovered_buys = []
+                    recovered_quantity = 0
+                else:
+                    remaining_to_match = quantity
+                    while remaining_to_match > 0 and recovered_buys:
+                        latest_buy = recovered_buys[-1]
+                        latest_buy_qty = int(float(latest_buy.get("quantity") or 0))
+                        if latest_buy_qty <= remaining_to_match:
+                            remaining_to_match -= latest_buy_qty
+                            recovered_buys.pop()
+                        else:
+                            latest_buy["quantity"] = latest_buy_qty - remaining_to_match
+                            remaining_to_match = 0
+                    recovered_quantity -= quantity
+                    if recovered_quantity < 0:
+                        recovered_quantity = 0
+
+        if recovered_quantity <= 0 or not recovered_buys:
             return
 
-        recent_buy = next(
-            (trade for trade in strategy_trades if trade.get("side") == "buy"),
-            None,
+        total_buy_cost = sum(
+            int(float(trade.get("quantity") or 0)) * float(trade.get("price") or 0.0)
+            for trade in recovered_buys
         )
-        entry_price = float(broker_position["avg_entry"])
-        quantity = int(float(broker_position["qty"]))
+        quantity = sum(int(float(trade.get("quantity") or 0)) for trade in recovered_buys)
+        if quantity <= 0:
+            return
+
+        recent_buy = recovered_buys[-1]
+        entry_price = total_buy_cost / quantity if total_buy_cost > 0 else float(recent_buy.get("price") or 0.0)
         recovered_entry_time = str(
-            (recent_buy or {}).get("created_at")
+            recent_buy.get("created_at")
             or datetime.now(timezone.utc).isoformat()
         )
         recovered_signal_time = _previous_five_min_slot_timestamp(recovered_entry_time)
@@ -507,7 +542,7 @@ class Phase1PaperRunner:
             target_price=exit_plan.target_price,
             entry_time=recovered_entry_time,
             signal_time=recovered_signal_time,
-            reason=str((recent_buy or {}).get("signal_reason") or "recovered_broker_position"),
+            reason=str(recent_buy.get("signal_reason") or "recovered_local_position"),
             stop_reason=exit_plan.stop_reason,
             target_reason=exit_plan.target_reason,
             initial_risk=abs(entry_price - exit_plan.stop_price),
@@ -524,7 +559,10 @@ class Phase1PaperRunner:
         if self.pending_order is None:
             return
 
-        order = alpaca_client.get_order_by_id(self.pending_order.alpaca_order_id)
+        order = await asyncio.to_thread(
+            alpaca_client.get_order_by_id,
+            self.pending_order.alpaca_order_id,
+        )
         await refresh_trade_statuses(order_ids=[self.pending_order.alpaca_order_id])
 
         status = str(order.get("status") or self.pending_order.status)
@@ -651,9 +689,8 @@ class Phase1PaperRunner:
 
         live_reference = self.last_live_bar_at or self.started_at
         if self.running and live_reference and is_rth_bar_timestamp(now.isoformat()):
-            live_dt = datetime.fromisoformat(live_reference)
-            live_age_seconds = max(0, int((now - live_dt).total_seconds()))
-            if live_age_seconds >= 120:
+            live_age_seconds = _runner_live_bar_age_seconds(self, now)
+            if live_age_seconds >= 360:
                 warnings.append(
                     f"No live 1m bars observed for {live_age_seconds}s during RTH"
                 )
@@ -669,12 +706,12 @@ class Phase1PaperRunner:
         return warnings
 
 
-_phase1_runner: Phase1PaperRunner | None = None
+_phase1_runners: dict[str, Phase1PaperRunner] = {}
+_phase1_monitor_task: asyncio.Task | None = None
 
 
 def reset_phase1_paper_runner() -> None:
-    global _phase1_runner
-    _phase1_runner = None
+    _phase1_runners.clear()
 
 
 def _empty_runner_status(strategy: str = DEFAULT_PHASE1_STRATEGY) -> dict:
@@ -713,14 +750,35 @@ async def start_phase1_paper_runner(
     history_days: int = 10,
     params: dict[str, Any] | None = None,
 ) -> dict:
-    global _phase1_runner
+    return await _start_phase1_paper_runner(
+        strategy=strategy,
+        fixed_quantity=fixed_quantity,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        exit_policy=exit_policy,
+        history_days=history_days,
+        params=params,
+        persist_desired=True,
+    )
 
+
+async def _start_phase1_paper_runner(
+    strategy: str = DEFAULT_PHASE1_STRATEGY,
+    fixed_quantity: int = 100,
+    stop_loss_pct: float = 2.0,
+    take_profit_pct: float = 4.0,
+    exit_policy: str | None = None,
+    history_days: int = 10,
+    params: dict[str, Any] | None = None,
+    persist_desired: bool = False,
+) -> dict:
     if not PAPER_TRADING:
         raise RuntimeError("Phase-1 paper runner requires PAPER_TRADING=true")
-    if _phase1_runner is not None and _phase1_runner.running:
-        raise RuntimeError("Phase-1 paper runner is already running")
     if strategy not in SUPPORTED_PHASE1_STRATEGIES:
         raise ValueError(f"Unsupported phase-1 strategy: {strategy}")
+    existing_runner = _phase1_runners.get(strategy)
+    if existing_runner is not None and existing_runner.running:
+        raise RuntimeError(f"Phase-1 paper runner is already running for {strategy}")
 
     runner = Phase1PaperRunner(
         Phase1PaperConfig(
@@ -733,28 +791,186 @@ async def start_phase1_paper_runner(
             params=params,
         )
     )
-    _phase1_runner = runner
-    return await runner.start()
+    _phase1_runners[strategy] = runner
+    status = await runner.start()
+    if persist_desired:
+        await _set_desired_phase1_runner(
+            Phase1PaperConfig(
+                strategy=strategy,
+                fixed_quantity=fixed_quantity,
+                stop_loss_pct=stop_loss_pct,
+                take_profit_pct=take_profit_pct,
+                exit_policy=exit_policy,
+                history_days=history_days,
+                params=params,
+            ),
+            is_active=True,
+        )
+    return status
 
 
-async def stop_phase1_paper_runner(close_position: bool = True) -> dict:
-    if _phase1_runner is None:
+async def stop_phase1_paper_runner(
+    strategy: str | None = None,
+    close_position: bool = True,
+) -> dict:
+    if strategy is not None:
+        if strategy not in SUPPORTED_PHASE1_STRATEGIES:
+            raise ValueError(f"Unsupported phase-1 strategy: {strategy}")
+        runner = _phase1_runners.get(strategy)
+        if runner is None:
+            return _empty_runner_status(strategy)
+        status = await runner.stop(close_position=close_position)
+        if not runner.running:
+            _phase1_runners.pop(strategy, None)
+            await _mark_desired_phase1_runner_inactive(strategy)
+        return status
+
+    active_runners = [runner for runner in _phase1_runners.values() if runner.running]
+    if not active_runners:
         return _empty_runner_status()
-    return await _phase1_runner.stop(close_position=close_position)
+    if len(active_runners) > 1:
+        raise RuntimeError("Multiple phase-1 runners are active; specify a strategy to stop")
+
+    runner = active_runners[0]
+    status = await runner.stop(close_position=close_position)
+    if not runner.running:
+        _phase1_runners.pop(runner.config.strategy, None)
+        await _mark_desired_phase1_runner_inactive(runner.config.strategy)
+    return status
+
+
+async def restore_desired_phase1_paper_runners() -> list[dict]:
+    configs = await _get_desired_phase1_runner_configs()
+    restored: list[dict] = []
+    for config in configs:
+        existing_runner = _phase1_runners.get(config.strategy)
+        if existing_runner is not None and existing_runner.running:
+            restored.append(existing_runner.status())
+            continue
+        try:
+            restored.append(
+                await _start_phase1_paper_runner(
+                    strategy=config.strategy,
+                    fixed_quantity=config.fixed_quantity,
+                    stop_loss_pct=config.stop_loss_pct,
+                    take_profit_pct=config.take_profit_pct,
+                    exit_policy=config.exit_policy,
+                    history_days=config.history_days,
+                    params=config.params,
+                    persist_desired=False,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to restore phase-1 paper runner for %s", config.strategy)
+    return restored
+
+
+async def start_phase1_paper_runner_monitor(interval_seconds: int = 30) -> None:
+    global _phase1_monitor_task
+    if _phase1_monitor_task is not None and not _phase1_monitor_task.done():
+        return
+
+    async def _monitor() -> None:
+        while True:
+            try:
+                await market_data.start_stream()
+                await trade_updates.start_trade_updates_stream()
+                await restore_desired_phase1_paper_runners()
+                await _poll_stale_phase1_runner_bars()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Phase-1 paper runner monitor failed")
+            await asyncio.sleep(interval_seconds)
+
+    _phase1_monitor_task = asyncio.create_task(_monitor())
+
+
+async def stop_phase1_paper_runner_monitor() -> None:
+    global _phase1_monitor_task
+    if _phase1_monitor_task is None:
+        return
+    _phase1_monitor_task.cancel()
+    try:
+        await _phase1_monitor_task
+    except asyncio.CancelledError:
+        pass
+    _phase1_monitor_task = None
+
+
+async def _poll_stale_phase1_runner_bars() -> None:
+    active_runners = [runner for runner in _phase1_runners.values() if runner.running]
+    if not active_runners:
+        return
+
+    now = _now_utc()
+    if not is_rth_bar_timestamp(now.isoformat()):
+        return
+
+    stale_runners = [
+        runner for runner in active_runners if _runner_live_bar_age_seconds(runner, now) >= 90
+    ]
+    if not stale_runners:
+        return
+
+    symbols = sorted({runner.config.symbol for runner in stale_runners})
+    start = (now - timedelta(minutes=45)).isoformat()
+    for symbol in symbols:
+        try:
+            bars = await get_analysis_bars(
+                symbol=symbol,
+                timeframe="1m",
+                start=start,
+                limit=60,
+            )
+        except Exception:
+            logger.exception("Failed to poll recent bars for %s", symbol)
+            continue
+
+        for runner in stale_runners:
+            if runner.config.symbol != symbol:
+                continue
+            last_live_dt = _parse_utc_datetime(runner.last_live_bar_at or runner.started_at)
+            for bar in bars:
+                bar_dt = _parse_utc_datetime(bar["time"])
+                if last_live_dt is not None and bar_dt <= last_live_dt:
+                    continue
+                await runner._on_live_bar(symbol, bar)
+
+
+def _runner_live_bar_age_seconds(runner: Phase1PaperRunner, now: datetime) -> int:
+    live_reference = runner.last_live_bar_at or runner.started_at
+    live_dt = _parse_utc_datetime(live_reference)
+    if live_dt is None:
+        return 999999
+    return max(0, int((now - live_dt).total_seconds()))
 
 
 def get_phase1_paper_runner_status(
     strategy: str | None = None,
 ) -> dict:
-    if _phase1_runner is None:
-        return _empty_runner_status(strategy or DEFAULT_PHASE1_STRATEGY)
-    if (
-        not _phase1_runner.running
-        and strategy is not None
-        and strategy != _phase1_runner.config.strategy
-    ):
-        return _empty_runner_status(strategy)
-    return _phase1_runner.status()
+    if strategy is not None:
+        runner = _phase1_runners.get(strategy)
+        if runner is None:
+            return _empty_runner_status(strategy)
+        return runner.status()
+
+    default_runner = _phase1_runners.get(DEFAULT_PHASE1_STRATEGY)
+    if default_runner is not None:
+        return default_runner.status()
+
+    active_runners = [runner for runner in _phase1_runners.values() if runner.running]
+    if len(active_runners) == 1:
+        return active_runners[0].status()
+
+    return _empty_runner_status(DEFAULT_PHASE1_STRATEGY)
+
+
+def get_phase1_paper_runner_statuses() -> list[dict]:
+    return [
+        get_phase1_paper_runner_status(strategy)
+        for strategy in sorted(SUPPORTED_PHASE1_STRATEGIES)
+    ]
 
 
 def get_phase1_paper_runner_readiness() -> dict:
@@ -798,7 +1014,12 @@ def get_phase1_paper_runner_readiness() -> dict:
         "account_error": account_error,
         "market_stream_running": market_stream_running,
         "trade_updates_running": trade_updates_running,
-        "runner_running": bool(_phase1_runner and _phase1_runner.running),
+        "runner_running": any(runner.running for runner in _phase1_runners.values()),
+        "active_strategies": sorted(
+            runner.config.strategy
+            for runner in _phase1_runners.values()
+            if runner.running
+        ),
         "market_session": session["market_session"],
         "current_session_open": session["current_session_open"],
         "current_session_close": session["current_session_close"],
@@ -812,8 +1033,10 @@ async def get_phase1_paper_runner_history(
     strategy: str | None = None,
 ) -> list[dict]:
     target_strategy = strategy
-    if target_strategy is None and _phase1_runner is not None:
-        target_strategy = _phase1_runner.config.strategy
+    if target_strategy is None:
+        active_runners = [runner for runner in _phase1_runners.values() if runner.running]
+        if len(active_runners) == 1:
+            target_strategy = active_runners[0].config.strategy
     target_strategy = target_strategy or DEFAULT_PHASE1_STRATEGY
     if target_strategy not in SUPPORTED_PHASE1_STRATEGIES:
         raise ValueError(f"Unsupported phase-1 strategy: {target_strategy}")
@@ -828,8 +1051,99 @@ async def get_phase1_paper_runner_history(
     return filtered[:limit]
 
 
+def _parse_utc_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
+
+
+async def _set_desired_phase1_runner(
+    config: Phase1PaperConfig,
+    is_active: bool,
+) -> None:
+    async with async_session() as session:
+        existing = await session.get(PaperRunnerConfig, config.strategy)
+        params_json = json.dumps(config.params) if config.params is not None else None
+        if existing is None:
+            existing = PaperRunnerConfig(
+                strategy=config.strategy,
+                symbol=config.symbol,
+                timeframe=config.timeframe,
+                research_profile=config.research_profile,
+                fixed_quantity=config.fixed_quantity,
+                stop_loss_pct=config.stop_loss_pct,
+                take_profit_pct=config.take_profit_pct,
+                exit_policy=config.exit_policy,
+                history_days=config.history_days,
+                params=params_json,
+                is_active=is_active,
+                updated_at=_now_db(),
+            )
+            session.add(existing)
+        else:
+            existing.symbol = config.symbol
+            existing.timeframe = config.timeframe
+            existing.research_profile = config.research_profile
+            existing.fixed_quantity = config.fixed_quantity
+            existing.stop_loss_pct = config.stop_loss_pct
+            existing.take_profit_pct = config.take_profit_pct
+            existing.exit_policy = config.exit_policy
+            existing.history_days = config.history_days
+            existing.params = params_json
+            existing.is_active = is_active
+            existing.updated_at = _now_db()
+        await session.commit()
+
+
+async def _mark_desired_phase1_runner_inactive(strategy: str) -> None:
+    async with async_session() as session:
+        existing = await session.get(PaperRunnerConfig, strategy)
+        if existing is not None:
+            existing.is_active = False
+            existing.updated_at = _now_db()
+            await session.commit()
+
+
+async def _get_desired_phase1_runner_configs() -> list[Phase1PaperConfig]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(PaperRunnerConfig).where(PaperRunnerConfig.is_active.is_(True))
+        )
+        records = result.scalars().all()
+
+    configs: list[Phase1PaperConfig] = []
+    for record in records:
+        if record.strategy not in SUPPORTED_PHASE1_STRATEGIES:
+            continue
+        params = json.loads(record.params) if record.params else None
+        configs.append(
+            Phase1PaperConfig(
+                strategy=record.strategy,
+                symbol=record.symbol,
+                timeframe=record.timeframe,
+                research_profile=record.research_profile,
+                fixed_quantity=record.fixed_quantity,
+                stop_loss_pct=record.stop_loss_pct,
+                take_profit_pct=record.take_profit_pct,
+                exit_policy=record.exit_policy,
+                history_days=record.history_days,
+                params=params,
+            )
+        )
+    return configs
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _now_db() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _market_session_snapshot() -> dict[str, str | None]:
