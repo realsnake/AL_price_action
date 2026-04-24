@@ -274,7 +274,9 @@ export default function Chart({
       markersRef.current.setMarkers(markers);
     }
 
-    const nextViewKey = viewKey ?? bars[0]?.time ?? "empty";
+    const firstBar = bars[0];
+    const firstBarKey = `${firstBar.time}:${firstBar.open}:${firstBar.high}:${firstBar.low}:${firstBar.close}`;
+    const nextViewKey = `${viewKey ?? "default"}:${firstBarKey}`;
     if (lastFitViewKeyRef.current !== nextViewKey) {
       chartRef.current?.timeScale().fitContent();
       lastFitViewKeyRef.current = nextViewKey;
