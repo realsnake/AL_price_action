@@ -19,6 +19,7 @@ import { formatBeijingDateTime, formatBeijingTime } from "../utils/time";
 interface PaperStrategyPanelProps {
   strategyName?: Phase1StrategyName;
   disabledReason?: string | null;
+  defaultFixedQuantity?: number;
   onRunnerAction?: () => void;
 }
 
@@ -36,7 +37,7 @@ const PHASE1_STRATEGY_META: Record<
   brooks_pullback_count: {
     label: "Pullback count",
     detail:
-      "qqq_5m_phase1 · H2 多头回调计数 · 结构止损到 H2 回调低点 · 1R 后跌破确认摆动低点并收回 EMA20 下方动态离场",
+      "qqq_5m_phase1 · H2 多头回调计数 · 观察仓默认 50 股 · 结构止损到 H2 回调低点 · 1R 后跌破确认摆动低点并收回 EMA20 下方动态离场",
   },
   brooks_small_pb_trend: {
     label: "Small pullback trend",
@@ -48,6 +49,7 @@ const PHASE1_STRATEGY_META: Record<
 export default function PaperStrategyPanel({
   strategyName,
   disabledReason,
+  defaultFixedQuantity = 100,
   onRunnerAction,
 }: PaperStrategyPanelProps) {
   const [status, setStatus] = useState<PaperStrategyStatus | null>(null);
@@ -55,7 +57,7 @@ export default function PaperStrategyPanel({
   const [recentTrades, setRecentTrades] = useState<TradeHistoryEntry[]>([]);
   const [selectedStrategy, setSelectedStrategy] =
     useState<Phase1StrategyName>(DEFAULT_PHASE1_STRATEGY);
-  const [fixedQuantity, setFixedQuantity] = useState(100);
+  const [fixedQuantity, setFixedQuantity] = useState(defaultFixedQuantity);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const lockedStrategy = strategyName ?? null;
@@ -84,7 +86,7 @@ export default function PaperStrategyPanel({
           .filter((runnerStatus) => runnerStatus.running)
           .map((runnerStatus) => runnerStatus.strategy),
       });
-      setFixedQuantity(next.fixed_quantity);
+      setFixedQuantity(next.running ? next.fixed_quantity : defaultFixedQuantity);
       if (lockedStrategy == null) {
         setSelectedStrategy(next.strategy);
       }
@@ -93,7 +95,7 @@ export default function PaperStrategyPanel({
       const message = e instanceof Error ? e.message : "Failed to load paper strategy status";
       setError(message);
     }
-  }, [lockedStrategy, selectedStrategy]);
+  }, [defaultFixedQuantity, lockedStrategy, selectedStrategy]);
 
   useWebSocket({
     url: "/ws/trades",

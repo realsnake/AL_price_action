@@ -125,13 +125,13 @@ async def test_stop_phase1_paper_strategy_forwards_strategy(monkeypatch):
     )
 
     req = paper_strategy_router.StopPhase1PaperRequest(
-        strategy="brooks_breakout_pullback",
+        strategy="brooks_pullback_count",
     )
 
     result = await paper_strategy_router.stop_phase1_paper_strategy(req)
 
-    assert result == {"running": False, "strategy": "brooks_breakout_pullback"}
+    assert result == {"running": False, "strategy": "brooks_pullback_count"}
     assert captured == {
-        "strategy": "brooks_breakout_pullback",
+        "strategy": "brooks_pullback_count",
         "close_position": True,
     }

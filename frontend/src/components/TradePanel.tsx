@@ -50,6 +50,12 @@ export default function TradePanel({
         disabledReason={disabledReason}
         onRunnerAction={onOrderPlaced}
       />
+      <PaperStrategyPanel
+        strategyName="brooks_pullback_count"
+        disabledReason={disabledReason}
+        defaultFixedQuantity={50}
+        onRunnerAction={onOrderPlaced}
+      />
 
       <div className="flex items-start justify-between gap-3">
         <div>

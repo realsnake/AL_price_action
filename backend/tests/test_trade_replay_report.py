@@ -68,6 +68,8 @@ def test_write_trade_replay_report_creates_svg_html_and_summary(tmp_path: Path):
     assert "止损理由" in svg_text
     assert "止盈理由" in svg_text
     assert "实际出场理由" in svg_text
+    assert "EMA20 趋势线" in svg_text
+    assert 'class="ema20"' in svg_text
     assert "开仓" in svg_text
     assert "出场" in svg_text
 
@@ -169,3 +171,6 @@ def test_write_trade_replay_report_describes_pullback_count_dynamic_exit_in_chin
     assert "这个 phase1 方案里没有固定止盈" in summary_text
     assert "达到 1R 后跌破确认摆动低点并收回 EMA20 下方" in summary_text
     assert "H2 多头回调计数" in svg_text
+    assert "EMA20 趋势线" in svg_text
+    assert "H2 买点" in svg_text
+    assert "第 2 段回调反转" in svg_text

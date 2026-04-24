@@ -16,6 +16,9 @@ build/
 *.db
 *.sqlite3
 
+# Generated research and paper-trading reports
+reports/
+
 # Node
 node_modules/
 frontend/dist/

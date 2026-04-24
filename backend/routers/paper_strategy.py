@@ -35,7 +35,7 @@ class StartPhase1PaperRequest(BaseModel):
 
 
 class StopPhase1PaperRequest(BaseModel):
-    strategy: Optional[Literal["brooks_small_pb_trend", "brooks_breakout_pullback"]] = None
+    strategy: Optional[Phase1Strategy] = None
 
 
 @router.get("/phase1/status")

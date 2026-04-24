@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
+from services.phase1_exit import compute_ema_series
 from services.research_profile import canonical_timestamp, market_time, session_day
 
 
@@ -50,6 +51,11 @@ def write_trade_replay_report(
     max_trade_days: int | None = None,
 ) -> ReplayReportResult:
     normalized_bars = [{**bar, "time": canonical_timestamp(bar["time"])} for bar in bars]
+    ema20_values = compute_ema_series(normalized_bars, 20)
+    normalized_bars = [
+        {**bar, "ema20": ema20_values[index]}
+        for index, bar in enumerate(normalized_bars)
+    ]
     normalized_trades = [_normalize_trade(trade) for trade in trades]
     day_bars = _group_bars_by_day(normalized_bars)
     grouped_trades = _group_trades_by_day(normalized_trades)
@@ -171,7 +177,12 @@ def _render_trade_day_svg(
 ) -> str:
     lows = [float(bar["low"]) for bar in bars]
     highs = [float(bar["high"]) for bar in bars]
-    annotated_prices = lows + highs
+    ema20_values = [
+        float(bar["ema20"])
+        for bar in bars
+        if bar.get("ema20") is not None and float(bar["ema20"]) > 0
+    ]
+    annotated_prices = lows + highs + ema20_values
     for trade in trades:
         annotated_prices.extend(
             [
@@ -215,6 +226,12 @@ def _render_trade_day_svg(
         ".value { fill: #aab7cf; font: 13px ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif; }",
         ".up { fill: #18c77a; stroke: #18c77a; }",
         ".down { fill: #f15b5d; stroke: #f15b5d; }",
+        ".ema20 { fill: none; stroke: #f3c969; stroke-width: 2.6; stroke-linejoin: round; stroke-linecap: round; }",
+        ".ema-label { fill: #f3c969; font: 700 13px ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif; }",
+        ".setup-pointer { stroke: #ffd166; stroke-width: 2; }",
+        ".setup-badge { fill: #271c08; stroke: #ffd166; stroke-width: 1.4; }",
+        ".setup-title { fill: #fff3bd; font: 800 14px ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif; }",
+        ".setup-detail { fill: #ffd166; font: 12px ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif; }",
         ".entry { stroke: #46a0ff; stroke-width: 2; stroke-dasharray: 8 6; }",
         ".exit { stroke: #b270ff; stroke-width: 2; stroke-dasharray: 8 6; }",
         ".stop { stroke: #ff6b6b; stroke-width: 2; stroke-dasharray: 10 6; }",
@@ -269,11 +286,32 @@ def _render_trade_day_svg(
             f'width="{candle_width:.2f}" height="{body_height:.2f}" rx="1.5" />'
         )
 
+    ema20_points = [
+        (
+            x_for_bar(index),
+            y_for_price(float(bar["ema20"])),
+            float(bar["ema20"]),
+        )
+        for index, bar in enumerate(bars)
+        if bar.get("ema20") is not None and float(bar["ema20"]) > 0
+    ]
+    if len(ema20_points) >= 2:
+        points = " ".join(f"{x:.2f},{y:.2f}" for x, y, _ in ema20_points)
+        last_x, last_y, last_value = ema20_points[-1]
+        label_x = min(last_x + 8, PLOT_RIGHT - 92)
+        label_y = max(PLOT_TOP + 18, min(PLOT_BOTTOM - 8, last_y - 8))
+        svg.append(f'<polyline class="ema20" points="{points}" />')
+        svg.append(
+            f'<text class="ema-label" x="{label_x:.2f}" y="{label_y:.2f}">EMA20 {last_value:.2f}</text>'
+        )
+
     sidebar_y = SIDEBAR_TOP + 26
     svg.extend(
         [
             f'<text class="legend-title" x="{SIDEBAR_LEFT + 20}" y="{sidebar_y}">交易回放</text>',
             f'<text class="legend-muted" x="{SIDEBAR_LEFT + 20}" y="{sidebar_y + 24}">{escape(symbol)} | {escape(timeframe)} | {escape(day)}</text>',
+            f'<line class="ema20" x1="{SIDEBAR_LEFT + 20}" y1="{sidebar_y + 48}" x2="{SIDEBAR_LEFT + 72}" y2="{sidebar_y + 48}" />',
+            f'<text class="legend-text" x="{SIDEBAR_LEFT + 82}" y="{sidebar_y + 53}">EMA20 趋势线</text>',
         ]
     )
 
@@ -304,6 +342,37 @@ def _render_trade_day_svg(
             f'<text class="legend-text" x="{PLOT_RIGHT - 120}" y="{stop_y - 8:.2f}" fill="#ff6b6b">止损 {trade["stop_loss"]:.2f}</text>'
         )
 
+        setup_marker = _extract_pullback_count_marker(trade["reason"])
+        if setup_marker is not None:
+            entry_bar = bars[entry_idx]
+            if setup_marker["direction"] == "long":
+                anchor_y = y_for_price(float(entry_bar["high"]))
+                badge_y = max(PLOT_TOP + 10, anchor_y - 58)
+                pointer_end_y = badge_y + 44
+            else:
+                anchor_y = y_for_price(float(entry_bar["low"]))
+                badge_y = min(PLOT_BOTTOM - 58, anchor_y + 16)
+                pointer_end_y = badge_y
+            badge_x = min(max(entry_x + 12, PLOT_LEFT + 8), PLOT_RIGHT - 168)
+            pointer_end_x = badge_x + 18
+            svg.append(
+                f'<line class="setup-pointer" x1="{entry_x:.2f}" y1="{anchor_y:.2f}" '
+                f'x2="{pointer_end_x:.2f}" y2="{pointer_end_y:.2f}" />'
+            )
+            svg.append(
+                f'<rect class="setup-badge" x="{badge_x:.2f}" y="{badge_y:.2f}" width="156" height="44" rx="12" />'
+            )
+            svg.append(
+                f'<text class="setup-title" x="{badge_x + 12:.2f}" y="{badge_y + 18:.2f}">'
+                f'{escape(setup_marker["label"])}'
+                "</text>"
+            )
+            svg.append(
+                f'<text class="setup-detail" x="{badge_x + 12:.2f}" y="{badge_y + 36:.2f}">'
+                f'{escape(setup_marker["detail"])}'
+                "</text>"
+            )
+
         if trade["target_price"] is not None:
             target_y = y_for_price(float(trade["target_price"]))
             svg.append(f'<line class="target" x1="{entry_x:.2f}" y1="{target_y:.2f}" x2="{exit_x:.2f}" y2="{target_y:.2f}" />')
@@ -311,7 +380,7 @@ def _render_trade_day_svg(
                 f'<text class="legend-text" x="{PLOT_RIGHT - 132}" y="{target_y - 8:.2f}" fill="#2ec98f">止盈 {trade["target_price"]:.2f}</text>'
             )
 
-        box_y = sidebar_y + 48 + (trade_index - 1) * 156
+        box_y = sidebar_y + 76 + (trade_index - 1) * 156
         svg.append(
             f'<rect class="legend-box" x="{SIDEBAR_LEFT + 16}" y="{box_y}" width="{SIDEBAR_WIDTH - 32}" height="142" />'
         )
@@ -387,6 +456,7 @@ def _render_report_html(
     total_pnl = sum(float(row["盈亏"]) for row in summary_rows)
     wins = sum(1 for row in summary_rows if float(row["盈亏"]) > 0)
     losses = sum(1 for row in summary_rows if float(row["盈亏"]) <= 0)
+    strategy_summary = _render_strategy_summary(strategy_name)
 
     cards = []
     for entry in report_entries:
@@ -480,6 +550,40 @@ def _render_report_html(
         font-size: 22px;
         margin-top: 6px;
       }}
+      .strategy-summary {{
+        margin-top: 18px;
+      }}
+      .strategy-summary h2 {{
+        margin: 0 0 12px;
+      }}
+      .strategy-summary p {{
+        margin: 0;
+        color: #c9d7ef;
+        line-height: 1.7;
+      }}
+      .strategy-grid {{
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }}
+      .strategy-point {{
+        background: #0f1521;
+        border: 1px solid #243047;
+        border-radius: 16px;
+        padding: 14px 16px;
+      }}
+      .strategy-point span {{
+        display: block;
+        color: #9ab0ce;
+        font-size: 12px;
+        margin-bottom: 8px;
+      }}
+      .strategy-point b {{
+        color: #f4f7ff;
+        font-size: 14px;
+        line-height: 1.55;
+      }}
       table {{
         width: 100%;
         border-collapse: collapse;
@@ -546,6 +650,8 @@ def _render_report_html(
         </div>
       </section>
 
+      {strategy_summary}
+
       <section class="panel" style="margin-top: 18px;">
         <h2 style="margin: 0;">summary.csv</h2>
         <table>
@@ -575,6 +681,75 @@ def _render_report_html(
   </body>
 </html>
 """
+
+
+def _render_strategy_summary(strategy_name: str) -> str:
+    summaries = {
+        "brooks_pullback_count": {
+            "title": "策略摘要：H2 多头回调计数",
+            "overview": (
+                "这个策略专门找 QQQ 5 分钟图里的多头趋势回调延续机会。它不是追任意上涨，"
+                "而是先确认价格在强势多头环境里，然后等待第二段回调结束，只有反转 K 线重新向上突破前一根高点时才做多。"
+            ),
+            "points": [
+                ("交易方向", "只做多，适配 qqq_5m_phase1 的美股常规交易时段。"),
+                ("入场条件", "H2 回调反转：第二段回调后出现强阳线，并突破上一根 K 线高点。"),
+                ("过滤条件", "价格在 EMA20 上方、EMA20 向上、收盘高于当日开盘，并高于 session VWAP 缓冲。"),
+                ("出场逻辑", "结构止损放在 H2 回调低点下方；无固定止盈，达到 1R 后用 swing low / EMA20 动态离场，或收盘平仓。"),
+            ],
+        },
+        "brooks_breakout_pullback": {
+            "title": "策略摘要：突破后的回调买入",
+            "overview": (
+                "这个策略寻找多头突破后的第一次有效回调。它要求突破先建立趋势强度，随后价格回踩但不破坏结构，"
+                "再在回调恢复向上时做多。"
+            ),
+            "points": [
+                ("交易方向", "只做多，运行在 QQQ 5 分钟 phase1 研究配置。"),
+                ("入场条件", "多头突破后回调守住结构，再重新向上确认。"),
+                ("过滤条件", "关注趋势、突破质量和回调防守，不交易弱突破或破坏结构的回调。"),
+                ("出场逻辑", "结构止损放在 breakout/pullback 低点下方，默认 0.75R 后保本并以 2.5R 目标管理。"),
+            ],
+        },
+        "brooks_small_pb_trend": {
+            "title": "策略摘要：小回调趋势延续",
+            "overview": (
+                "这个策略寻找强趋势中的浅回调延续。它更偏向趋势跟随，要求回调幅度小、趋势结构仍然完整，"
+                "在价格恢复顺趋势推进时做多。"
+            ),
+            "points": [
+                ("交易方向", "只做多，运行在 QQQ 5 分钟 phase1 研究配置。"),
+                ("入场条件", "强趋势内的小回调结束后，价格重新顺趋势向上。"),
+                ("过滤条件", "关注趋势延续质量，避免在深回调或趋势破坏后追入。"),
+                ("出场逻辑", "结构止损放在信号回调低点下方；达到 1R 后用确认回调低点和 EMA20 动态离场。"),
+            ],
+        },
+    }
+    summary = summaries.get(strategy_name)
+    if summary is None:
+        return (
+            '<section class="panel strategy-summary">'
+            "<h2>策略摘要</h2>"
+            f"<p>{escape(strategy_name)} 的策略说明尚未配置。</p>"
+            "</section>"
+        )
+
+    points_html = "".join(
+        (
+            '<div class="strategy-point">'
+            f"<span>{escape(label)}</span>"
+            f"<b>{escape(text)}</b>"
+            "</div>"
+        )
+        for label, text in summary["points"]
+    )
+    return (
+        '<section class="panel strategy-summary">'
+        f"<h2>{escape(summary['title'])}</h2>"
+        f"<p>{escape(summary['overview'])}</p>"
+        f'<div class="strategy-grid">{points_html}</div>'
+        "</section>"
+    )
 
 
 def _group_bars_by_day(bars: list[dict]) -> dict[str, list[dict]]:
@@ -686,6 +861,32 @@ def _describe_entry_reason(reason: str) -> str:
         )
 
     return reason
+
+
+def _extract_pullback_count_marker(reason: str) -> dict[str, str] | None:
+    buy_match = re.match(
+        r"H([0-9]+) buy: leg ([0-9]+) pullback reversal in bull trend",
+        reason,
+    )
+    if buy_match:
+        return {
+            "direction": "long",
+            "label": f"H{buy_match.group(1)} 买点",
+            "detail": f"第 {buy_match.group(2)} 段回调反转",
+        }
+
+    sell_match = re.match(
+        r"L([0-9]+) sell: leg ([0-9]+) rally reversal in bear trend",
+        reason,
+    )
+    if sell_match:
+        return {
+            "direction": "short",
+            "label": f"L{sell_match.group(1)} 卖点",
+            "detail": f"第 {sell_match.group(2)} 段反弹反转",
+        }
+
+    return None
 
 
 def _truncate(text: str, max_len: int) -> str:
