@@ -106,6 +106,7 @@ export interface PaperStrategyPosition {
   stop_price: number;
   target_price: number | null;
   entry_time: string;
+  signal_time?: string;
   reason: string;
   stop_reason: string;
   target_reason: string | null;

@@ -180,6 +180,10 @@ export default function App() {
 
   useEffect(() => {
     fetchAccountData();
+    const id = window.setInterval(() => {
+      void fetchAccountData();
+    }, 15000);
+    return () => window.clearInterval(id);
   }, [fetchAccountData]);
 
   useEffect(() => {
@@ -214,15 +218,29 @@ export default function App() {
   const activeRunnerPosition = spotlightRunner?.symbol
     ? positions.find((position) => position.symbol === spotlightRunner.symbol)
     : undefined;
+  const runnerStatusPosition = spotlightRunner?.position ?? null;
+  const hasRunnerPosition = activeRunnerPosition != null || runnerStatusPosition != null;
   const latestRunnerEvent = spotlightRunner?.recent_events.at(-1);
   const runnerPnLText = activeRunnerPosition
     ? `${activeRunnerPosition.unrealized_pnl >= 0 ? "+" : ""}$${activeRunnerPosition.unrealized_pnl.toFixed(2)} (${activeRunnerPosition.unrealized_pnl_pct.toFixed(2)}%)`
+    : runnerStatusPosition
+      ? `${runnerStatusPosition.quantity} shares open`
     : "No open runner position";
   const runnerPnLClass = activeRunnerPosition
     ? activeRunnerPosition.unrealized_pnl >= 0
       ? "text-emerald-300"
       : "text-rose-300"
+    : runnerStatusPosition
+      ? "text-emerald-300"
     : "text-slate-300";
+  const runnerPositionDetail = activeRunnerPosition
+    ? `${activeRunnerPosition.qty} shares @ $${activeRunnerPosition.avg_entry.toFixed(2)}`
+    : runnerStatusPosition
+      ? `${spotlightRunner?.strategy ?? "runner"} @ $${runnerStatusPosition.entry_price.toFixed(2)} · stop $${runnerStatusPosition.stop_price.toFixed(2)}`
+      : "No active QQQ paper position yet";
+  const openRunnerPositions = activeRunners.filter(
+    (runnerStatus) => runnerStatus.position != null,
+  );
   const executionPulseMessage = spotlightRunner?.pending_order
     ? `${spotlightRunner.pending_order.side.toUpperCase()} ${spotlightRunner.pending_order.quantity} pending`
     : spotlightRunner?.last_live_bar_at
@@ -256,8 +274,8 @@ export default function App() {
           ? "text-green-400"
           : "text-red-400";
   const spotlightTone = spotlightRunner?.running
-    ? activeRunnerPosition
-      ? activeRunnerPosition.unrealized_pnl >= 0
+    ? hasRunnerPosition
+      ? activeRunnerPosition == null || activeRunnerPosition.unrealized_pnl >= 0
         ? "border-emerald-400/25 bg-emerald-400/[0.08]"
         : "border-rose-400/25 bg-rose-400/[0.08]"
       : "border-cyan-400/25 bg-cyan-400/[0.08]"
@@ -398,9 +416,7 @@ export default function App() {
                   {runnerPnLText}
                 </p>
                 <p className="mt-1 text-xs text-slate-400">
-                  {activeRunnerPosition
-                    ? `${activeRunnerPosition.qty} shares @ $${activeRunnerPosition.avg_entry.toFixed(2)}`
-                    : "No active QQQ paper position yet"}
+                  {runnerPositionDetail}
                 </p>
               </div>
 
@@ -410,6 +426,9 @@ export default function App() {
                 </p>
                 <p className="mt-2 text-base font-semibold text-white">
                   {activeRunners.reduce((sum, runnerStatus) => sum + runnerStatus.orders_submitted, 0)} orders submitted
+                  {openRunnerPositions.length > 0
+                    ? ` · ${openRunnerPositions.length} open runner position`
+                    : ""}
                 </p>
                 <p className="mt-1 text-xs text-slate-400">
                   {executionPulseMessage}
@@ -439,7 +458,13 @@ export default function App() {
             <div className="bg-red-900/30 border border-red-800 rounded p-3 text-red-400 text-sm">{error}</div>
           )}
 
-          <Chart bars={bars} signals={signals} height={480} />
+          <Chart
+            bars={bars}
+            signals={signals}
+            paperRunnerStatuses={paperRunnerStatuses}
+            viewKey={`${symbol}:${timeframe}:${startDate}:${barLimit}:${chartRequest?.researchProfile ?? "default"}`}
+            height={480}
+          />
 
           {/* Equity Curve (shown during backtest) */}
           {equityCurve.length > 0 && (

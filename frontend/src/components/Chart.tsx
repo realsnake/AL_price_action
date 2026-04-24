@@ -5,6 +5,7 @@ import {
   HistogramSeries,
   createSeriesMarkers,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type CandlestickData,
   type HistogramData,
@@ -12,16 +13,21 @@ import {
   type ISeriesMarkersPluginApi,
   ColorType,
   CrosshairMode,
+  LineStyle,
   TickMarkType,
 } from "lightweight-charts";
-import type { Bar, Signal } from "../types";
+import type { Bar, PaperStrategyStatus, Signal } from "../types";
 import { formatBeijingDateTime } from "../utils/time";
 
 interface ChartProps {
   bars: Bar[];
   signals: Signal[];
+  paperRunnerStatuses?: PaperStrategyStatus[];
+  viewKey?: string;
   height?: number;
 }
+
+type ChartMarker = Parameters<ISeriesMarkersPluginApi<Time>["setMarkers"]>[0][number];
 
 function toChartTime(iso: string): Time {
   return (new Date(iso).getTime() / 1000) as Time;
@@ -93,12 +99,46 @@ function formatBeijingAxisTick(time: Time, tickMarkType: TickMarkType): string {
   }
 }
 
-export default function Chart({ bars, signals, height = 500 }: ChartProps) {
+function strategyLabel(strategy: string): string {
+  switch (strategy) {
+    case "brooks_small_pb_trend":
+      return "Small PB Trend";
+    case "brooks_breakout_pullback":
+      return "Breakout Pullback";
+    case "brooks_pullback_count":
+      return "Pullback Count";
+    default:
+      return strategy;
+  }
+}
+
+function strategyColor(strategy: string): string {
+  switch (strategy) {
+    case "brooks_small_pb_trend":
+      return "#22d3ee";
+    case "brooks_breakout_pullback":
+      return "#f59e0b";
+    case "brooks_pullback_count":
+      return "#a78bfa";
+    default:
+      return "#38bdf8";
+  }
+}
+
+export default function Chart({
+  bars,
+  signals,
+  paperRunnerStatuses = [],
+  viewKey,
+  height = 500,
+}: ChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const runnerPriceLinesRef = useRef<IPriceLine[]>([]);
+  const lastFitViewKeyRef = useRef<string | null>(null);
 
   const initChart = useCallback(() => {
     if (!containerRef.current) return;
@@ -160,6 +200,7 @@ export default function Chart({ bars, signals, height = 500 }: ChartProps) {
     candleRef.current = candleSeries;
     volumeRef.current = volumeSeries;
     markersRef.current = seriesMarkers;
+    lastFitViewKeyRef.current = null;
 
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -203,19 +244,102 @@ export default function Chart({ bars, signals, height = 500 }: ChartProps) {
     volumeRef.current.setData(volumeData);
 
     if (markersRef.current) {
-      const markers = signals.map((s) => ({
+      const signalMarkers: ChartMarker[] = signals.map((s) => ({
         time: toChartTime(s.timestamp),
         position: s.signal_type === "buy" ? ("belowBar" as const) : ("aboveBar" as const),
         color: s.signal_type === "buy" ? "#22c55e" : "#ef4444",
         shape: s.signal_type === "buy" ? ("arrowUp" as const) : ("arrowDown" as const),
         text: `${s.signal_type.toUpperCase()} $${s.price.toFixed(2)}`,
       }));
+      const runnerMarkers: ChartMarker[] = paperRunnerStatuses.flatMap((runnerStatus) => {
+        const position = runnerStatus.position;
+        if (position == null) {
+          return [];
+        }
+        const label = strategyLabel(runnerStatus.strategy);
+        const targetText =
+          position.target_price == null
+            ? "no fixed TP"
+            : `TP $${position.target_price.toFixed(2)}`;
+        return [{
+          time: toChartTime(position.signal_time ?? position.entry_time),
+          position: "belowBar" as const,
+          color: strategyColor(runnerStatus.strategy),
+          shape: "arrowUp" as const,
+          text: `${label} ENTRY ${position.quantity} @ $${position.entry_price.toFixed(2)} · SL $${position.stop_price.toFixed(2)} · ${targetText}`,
+        }];
+      });
+      const markers = [...signalMarkers, ...runnerMarkers];
       markers.sort((a, b) => (a.time as number) - (b.time as number));
       markersRef.current.setMarkers(markers);
     }
 
-    chartRef.current?.timeScale().fitContent();
-  }, [bars, signals]);
+    const nextViewKey = viewKey ?? bars[0]?.time ?? "empty";
+    if (lastFitViewKeyRef.current !== nextViewKey) {
+      chartRef.current?.timeScale().fitContent();
+      lastFitViewKeyRef.current = nextViewKey;
+    }
+  }, [bars, signals, paperRunnerStatuses, viewKey]);
+
+  useEffect(() => {
+    if (!candleRef.current) return;
+
+    for (const line of runnerPriceLinesRef.current) {
+      candleRef.current.removePriceLine(line);
+    }
+    runnerPriceLinesRef.current = [];
+
+    const nextLines: IPriceLine[] = [];
+    for (const runnerStatus of paperRunnerStatuses) {
+      const position = runnerStatus.position;
+      if (position == null) {
+        continue;
+      }
+
+      const label = strategyLabel(runnerStatus.strategy);
+      const color = strategyColor(runnerStatus.strategy);
+      const targetText =
+        position.target_price == null
+          ? "no fixed TP"
+          : `TP $${position.target_price.toFixed(2)}`;
+
+      nextLines.push(candleRef.current.createPriceLine({
+        price: position.entry_price,
+        color,
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: `${label} entry ${position.quantity} @ ${position.entry_price.toFixed(2)} · ${targetText}`,
+      }));
+      nextLines.push(candleRef.current.createPriceLine({
+        price: position.stop_price,
+        color: "#fb7185",
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `${label} stop ${position.stop_price.toFixed(2)} · ${position.stop_reason}`,
+      }));
+      if (position.target_price != null) {
+        nextLines.push(candleRef.current.createPriceLine({
+          price: position.target_price,
+          color: "#34d399",
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `${label} target ${position.target_price.toFixed(2)} · ${position.target_reason ?? "take profit"}`,
+        }));
+      }
+    }
+
+    runnerPriceLinesRef.current = nextLines;
+    return () => {
+      if (!candleRef.current) return;
+      for (const line of runnerPriceLinesRef.current) {
+        candleRef.current.removePriceLine(line);
+      }
+      runnerPriceLinesRef.current = [];
+    };
+  }, [paperRunnerStatuses]);
 
   return (
     <div
