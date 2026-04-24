@@ -3,12 +3,14 @@ import {
   createChart,
   CandlestickSeries,
   HistogramSeries,
+  LineSeries,
   createSeriesMarkers,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
   type CandlestickData,
   type HistogramData,
+  type LineData,
   type Time,
   type ISeriesMarkersPluginApi,
   ColorType,
@@ -28,9 +30,34 @@ interface ChartProps {
 }
 
 type ChartMarker = Parameters<ISeriesMarkersPluginApi<Time>["setMarkers"]>[0][number];
+const EMA20_PERIOD = 20;
 
 function toChartTime(iso: string): Time {
   return (new Date(iso).getTime() / 1000) as Time;
+}
+
+function calculateEmaData(bars: Bar[], period: number): LineData[] {
+  if (bars.length < period) {
+    return [];
+  }
+
+  const multiplier = 2 / (period + 1);
+  const seed = bars.slice(0, period).reduce((sum, bar) => sum + bar.close, 0) / period;
+  let ema = seed;
+  const emaData: LineData[] = [{
+    time: toChartTime(bars[period - 1].time),
+    value: ema,
+  }];
+
+  for (let index = period; index < bars.length; index += 1) {
+    ema = (bars[index].close - ema) * multiplier + ema;
+    emaData.push({
+      time: toChartTime(bars[index].time),
+      value: ema,
+    });
+  }
+
+  return emaData;
 }
 
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
@@ -136,6 +163,7 @@ export default function Chart({
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const ema20Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const runnerPriceLinesRef = useRef<IPriceLine[]>([]);
   const lastFitViewKeyRef = useRef<string | null>(null);
@@ -185,6 +213,14 @@ export default function Chart({
       wickUpColor: "#22c55e",
     });
 
+    const ema20Series = chart.addSeries(LineSeries, {
+      color: "#fbbf24",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      title: "EMA20",
+    });
+
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
@@ -199,6 +235,7 @@ export default function Chart({
     chartRef.current = chart;
     candleRef.current = candleSeries;
     volumeRef.current = volumeSeries;
+    ema20Ref.current = ema20Series;
     markersRef.current = seriesMarkers;
     lastFitViewKeyRef.current = null;
 
@@ -224,7 +261,7 @@ export default function Chart({
   }, [initChart]);
 
   useEffect(() => {
-    if (!candleRef.current || !volumeRef.current || bars.length === 0) return;
+    if (!candleRef.current || !volumeRef.current || !ema20Ref.current || bars.length === 0) return;
 
     const candleData: CandlestickData[] = bars.map((b) => ({
       time: toChartTime(b.time),
@@ -242,6 +279,7 @@ export default function Chart({
 
     candleRef.current.setData(candleData);
     volumeRef.current.setData(volumeData);
+    ema20Ref.current.setData(calculateEmaData(bars, EMA20_PERIOD));
 
     if (markersRef.current) {
       const signalMarkers: ChartMarker[] = signals.map((s) => ({
@@ -344,9 +382,11 @@ export default function Chart({
   }, [paperRunnerStatuses]);
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full rounded-lg overflow-hidden border border-gray-800"
-    />
+    <div className="relative w-full rounded-lg overflow-hidden border border-gray-800">
+      <div className="pointer-events-none absolute left-3 top-3 z-10 rounded border border-amber-300/40 bg-slate-950/80 px-2 py-1 text-xs font-medium text-amber-300 shadow-lg shadow-slate-950/40">
+        EMA20
+      </div>
+      <div ref={containerRef} className="w-full" />
+    </div>
   );
 }
