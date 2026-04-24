@@ -20,10 +20,11 @@ async def test_start_phase1_paper_strategy_forwards_request(monkeypatch):
     )
 
     req = paper_strategy_router.StartPhase1PaperRequest(
-        strategy="brooks_breakout_pullback",
+        strategy="brooks_pullback_count",
         fixed_quantity=50,
         stop_loss_pct=1.5,
         take_profit_pct=3.5,
+        exit_policy="pullback_count_swing_ema_after_1r",
         history_days=8,
     )
 
@@ -31,11 +32,11 @@ async def test_start_phase1_paper_strategy_forwards_request(monkeypatch):
 
     assert result == {"running": True, "symbol": "QQQ"}
     assert captured["kwargs"] == {
-        "strategy": "brooks_breakout_pullback",
+        "strategy": "brooks_pullback_count",
         "fixed_quantity": 50,
         "stop_loss_pct": 1.5,
         "take_profit_pct": 3.5,
-        "exit_policy": None,
+        "exit_policy": "pullback_count_swing_ema_after_1r",
         "history_days": 8,
         "params": None,
     }

@@ -16,9 +16,15 @@ from services.paper_strategy_runner import (
 
 router = APIRouter(prefix="/api/paper-strategy", tags=["paper-strategy"])
 
+Phase1Strategy = Literal[
+    "brooks_small_pb_trend",
+    "brooks_breakout_pullback",
+    "brooks_pullback_count",
+]
+
 
 class StartPhase1PaperRequest(BaseModel):
-    strategy: Literal["brooks_small_pb_trend", "brooks_breakout_pullback"] = "brooks_small_pb_trend"
+    strategy: Phase1Strategy = "brooks_small_pb_trend"
     fixed_quantity: int = Field(100, ge=1)
     stop_loss_pct: float = Field(2.0, gt=0.0)
     take_profit_pct: float = Field(4.0, gt=0.0)
@@ -29,7 +35,7 @@ class StartPhase1PaperRequest(BaseModel):
 
 @router.get("/phase1/status")
 def get_phase1_paper_strategy_status(
-    strategy: Optional[Literal["brooks_small_pb_trend", "brooks_breakout_pullback"]] = None,
+    strategy: Optional[Phase1Strategy] = None,
 ):
     return get_phase1_paper_runner_status(strategy=strategy)
 
@@ -37,7 +43,7 @@ def get_phase1_paper_strategy_status(
 @router.get("/phase1/history")
 async def get_phase1_paper_strategy_history(
     limit: int = 10,
-    strategy: Optional[Literal["brooks_small_pb_trend", "brooks_breakout_pullback"]] = None,
+    strategy: Optional[Phase1Strategy] = None,
 ):
     return await get_phase1_paper_runner_history(limit=limit, strategy=strategy)
 

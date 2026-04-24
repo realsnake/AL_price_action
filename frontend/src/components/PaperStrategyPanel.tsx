@@ -30,6 +30,11 @@ const PHASE1_STRATEGY_META: Record<
     detail:
       "qqq_5m_phase1 · 结构止损到 breakout/pullback 低点下方 · 0.75R 后提到保本 · 2.5R 固定止盈 · 收盘强平",
   },
+  brooks_pullback_count: {
+    label: "Pullback count",
+    detail:
+      "qqq_5m_phase1 · H2 多头回调计数 · 结构止损到 H2 回调低点 · 1R 后跌破确认摆动低点并收回 EMA20 下方动态离场",
+  },
   brooks_small_pb_trend: {
     label: "Small pullback trend",
     detail:

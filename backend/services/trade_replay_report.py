@@ -619,9 +619,13 @@ def _describe_stop_reason(reason: str | None, stop_loss_pct: float) -> str:
         "fixed_pct_stop_loss": f"固定 {stop_loss_pct:.1f}% 止损",
         "phase1_structural_below_signal_pullback_low": "跌破信号回调低点",
         "phase1_structural_below_breakout_pullback_low": "跌破 breakout / pullback 结构低点",
+        "phase1_structural_below_h2_pullback_low": "跌破 H2 回调低点",
         "breakout_break_even_after_1r": "达到 1R 后止损抬到保本位",
         "breakout_target_2_5r_break_even_after_0_75r": "达到 0.75R 后止损抬到保本位",
         "breakout_pullback_low_after_1r": "达到 1R 后止损抬到 pullback low",
+        "pullback_count_break_even_after_1r": "达到 1R 后止损抬到保本位",
+        "pullback_count_target_2r_break_even_after_0_75r": "达到 0.75R 后止损抬到保本位",
+        "pullback_count_pullback_low_after_1r": "达到 1R 后止损抬到 H2 回调低点",
     }
     return mapping.get(reason or "", reason or "未记录止损理由")
 
@@ -636,6 +640,10 @@ def _describe_target_reason(reason: str | None, take_profit_pct: float) -> str:
         "breakout_target_2r": "固定 2R 止盈",
         "breakout_target_2_5r_break_even_after_0_75r": "固定 2.5R 止盈",
         "breakout_measured_move": "breakout bar measured move 止盈",
+        "pullback_count_target_1r": "固定 1R 止盈",
+        "pullback_count_target_1_5r": "固定 1.5R 止盈",
+        "pullback_count_target_2r": "固定 2R 止盈",
+        "pullback_count_target_2r_break_even_after_0_75r": "固定 2R 止盈",
     }
     return mapping.get(reason, reason)
 
@@ -648,6 +656,7 @@ def _describe_exit_reason(reason: str) -> str:
         "end_of_data": "数据结束时平仓",
         "phase1_confirmed_swing_low_break_after_1r": "达到 1R 后跌破确认摆动低点",
         "phase1_breakout_confirmed_swing_low_break_after_1r": "达到 1R 后跌破确认摆动低点并收回 EMA20 下方",
+        "phase1_pullback_count_confirmed_swing_low_break_after_1r": "达到 1R 后跌破确认摆动低点并收回 EMA20 下方",
     }
     return mapping.get(reason, reason.replace("_", " "))
 
@@ -668,6 +677,13 @@ def _describe_entry_reason(reason: str) -> str:
     small_pb_match = re.match(r"Small PB bull trend: .* above ([0-9.]+)", reason)
     if small_pb_match:
         return f"小回调多头趋势：站稳 {small_pb_match.group(1)} 上方"
+
+    pullback_count_match = re.match(r"H([0-9]+) buy: leg ([0-9]+) pullback reversal in bull trend", reason)
+    if pullback_count_match:
+        return (
+            f"H{pullback_count_match.group(1)} 多头回调计数："
+            f"第 {pullback_count_match.group(2)} 段回调后重新向上"
+        )
 
     return reason
 

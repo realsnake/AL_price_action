@@ -57,6 +57,7 @@ export type Timeframe = "1m" | "5m" | "15m" | "1h" | "1D";
 export type ResearchProfile = "qqq_5m_phase1";
 export type Phase1StrategyName =
   | "brooks_breakout_pullback"
+  | "brooks_pullback_count"
   | "brooks_small_pb_trend";
 
 export interface BacktestTrade {
@@ -164,6 +165,7 @@ export interface PaperStrategyStatus {
   fixed_quantity: number;
   stop_loss_pct: number;
   take_profit_pct: number;
+  exit_policy: string | null;
   history_days: number;
   params: Record<string, unknown> | null;
   bar_count: number;

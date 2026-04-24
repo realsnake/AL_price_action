@@ -307,8 +307,15 @@ async def test_phase1_paper_runner_requires_paper_mode(monkeypatch):
     paper_strategy_runner.reset_phase1_paper_runner()
 
 
+@pytest.mark.parametrize(
+    "strategy_name",
+    [
+        "brooks_breakout_pullback",
+        "brooks_pullback_count",
+    ],
+)
 @pytest.mark.asyncio
-async def test_phase1_paper_runner_accepts_breakout_pullback_strategy(monkeypatch):
+async def test_phase1_paper_runner_accepts_phase1_strategy(monkeypatch, strategy_name):
     paper_strategy_runner.reset_phase1_paper_runner()
 
     async def fake_get_analysis_bars(
@@ -353,12 +360,12 @@ async def test_phase1_paper_runner_accepts_breakout_pullback_strategy(monkeypatc
     monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_orders", lambda status="open": [])
 
     started = await paper_strategy_runner.start_phase1_paper_runner(
-        strategy="brooks_breakout_pullback",
+        strategy=strategy_name,
         fixed_quantity=25,
     )
 
-    assert captured["strategy_name"] == "brooks_breakout_pullback"
-    assert started["strategy"] == "brooks_breakout_pullback"
+    assert captured["strategy_name"] == strategy_name
+    assert started["strategy"] == strategy_name
 
     await paper_strategy_runner.stop_phase1_paper_runner(close_position=False)
     paper_strategy_runner.reset_phase1_paper_runner()

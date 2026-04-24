@@ -166,16 +166,35 @@ class PullbackCountStrategy(BaseStrategy):
     )
 
     def default_params(self) -> dict:
-        return {"ema_period": 20, "quantity": 1}
+        return {
+            "ema_period": 20,
+            "quantity": 1,
+            "min_pullback_legs": 2,
+            "max_pullback_legs": 2,
+            "min_reversal_body_ratio": 0.45,
+            "ema_slope_bars": 5,
+            "require_above_session_open": True,
+            "require_above_session_vwap": True,
+            "session_vwap_buffer_bps": 5.0,
+        }
 
     def generate_signals(self, symbol: str, bars: list[dict]) -> list[Signal]:
         ema_p = self.params.get("ema_period", 20)
         qty = self.params.get("quantity", 1)
+        min_pullback_legs = self.params.get("min_pullback_legs", 2)
+        max_pullback_legs = self.params.get("max_pullback_legs", 2)
+        min_reversal_body_ratio = self.params.get("min_reversal_body_ratio", 0.45)
+        ema_slope_bars = self.params.get("ema_slope_bars", 5)
+        require_above_session_open = self.params.get("require_above_session_open", True)
+        require_above_session_vwap = self.params.get("require_above_session_vwap", True)
+        session_vwap_buffer_bps = self.params.get("session_vwap_buffer_bps", 5.0)
         if len(bars) < ema_p + 5:
             return []
 
         closes = [b["close"] for b in bars]
         ema = _ema(closes, ema_p)
+        session_open = _session_open(bars)
+        session_vwap = _session_vwap(bars)
         signals = []
 
         # Track pullback legs
@@ -190,44 +209,83 @@ class PullbackCountStrategy(BaseStrategy):
 
             curr = bars[i]
             prev = bars[i - 1]
-            in_bull = closes[i] > ema[i] and ema[i] > ema[max(0, i - 5)]
-            in_bear = closes[i] < ema[i] and ema[i] < ema[max(0, i - 5)]
+            slope_index = max(0, i - ema_slope_bars)
+            in_bull = closes[i] > ema[i] and ema[i] > ema[slope_index]
+            in_bear = closes[i] < ema[i] and ema[i] < ema[slope_index]
 
             # Bull trend: count pullback legs
             if in_bull:
                 bear_legs = 0
                 is_pullback = _is_bear(curr) or curr["low"] < prev["low"]
+                was_pullback = prev_was_pullback_bull
                 if is_pullback and not prev_was_pullback_bull:
                     bull_legs += 1
-                prev_was_pullback_bull = is_pullback
 
                 # Signal on reversal back up after pullback
-                if bull_legs >= 1 and not is_pullback and prev_was_pullback_bull is False and _is_bull(curr) and _is_strong(curr, 0.4):
-                    if curr["close"] > prev["high"]:
+                if (
+                    min_pullback_legs <= bull_legs <= max_pullback_legs
+                    and not is_pullback
+                    and was_pullback
+                    and _is_bull(curr)
+                    and _is_strong(curr, min_reversal_body_ratio)
+                ):
+                    vwap_buffer = session_vwap_buffer_bps / 10000.0
+                    above_open = (
+                        not require_above_session_open
+                        or curr["close"] > session_open[i]
+                    )
+                    above_vwap = (
+                        not require_above_session_vwap
+                        or curr["close"] >= session_vwap[i] * (1 + vwap_buffer)
+                    )
+                    if curr["close"] > prev["high"] and above_open and above_vwap:
                         label = f"H{min(bull_legs, 4)}"
                         signals.append(_make_signal(
                             symbol, SignalType.BUY, curr, qty,
                             f"{label} buy: leg {bull_legs} pullback reversal in bull trend"
                         ))
                         bull_legs = 0
+                elif bull_legs > max_pullback_legs and not is_pullback:
+                    bull_legs = 0
+                prev_was_pullback_bull = is_pullback
             elif in_bear:
                 bull_legs = 0
                 is_rally = _is_bull(curr) or curr["high"] > prev["high"]
+                was_pullback = prev_was_pullback_bear
                 if is_rally and not prev_was_pullback_bear:
                     bear_legs += 1
-                prev_was_pullback_bear = is_rally
 
-                if bear_legs >= 1 and not is_rally and prev_was_pullback_bear is False and _is_bear(curr) and _is_strong(curr, 0.4):
-                    if curr["close"] < prev["low"]:
+                if (
+                    min_pullback_legs <= bear_legs <= max_pullback_legs
+                    and not is_rally
+                    and was_pullback
+                    and _is_bear(curr)
+                    and _is_strong(curr, min_reversal_body_ratio)
+                ):
+                    vwap_buffer = session_vwap_buffer_bps / 10000.0
+                    below_open = (
+                        not require_above_session_open
+                        or curr["close"] < session_open[i]
+                    )
+                    below_vwap = (
+                        not require_above_session_vwap
+                        or curr["close"] <= session_vwap[i] * (1 - vwap_buffer)
+                    )
+                    if curr["close"] < prev["low"] and below_open and below_vwap:
                         label = f"L{min(bear_legs, 4)}"
                         signals.append(_make_signal(
                             symbol, SignalType.SELL, curr, qty,
                             f"{label} sell: leg {bear_legs} rally reversal in bear trend"
                         ))
                         bear_legs = 0
+                elif bear_legs > max_pullback_legs and not is_rally:
+                    bear_legs = 0
+                prev_was_pullback_bear = is_rally
             else:
                 bull_legs = 0
                 bear_legs = 0
+                prev_was_pullback_bull = False
+                prev_was_pullback_bear = False
 
         return signals
 

@@ -159,6 +159,59 @@ def test_phase1_breakout_pullback_exit_plan_supports_1r_target_policy():
     assert plan.target_reason == "breakout_target_1r"
 
 
+def test_phase1_pullback_count_exit_plan_uses_recent_pullback_low_without_fixed_target():
+    bars = [
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 102.4, 101.7, 102.2),
+        _bar("2025-01-06T14:55:00+00:00", 102.2, 102.3, 101.8, 102.0),
+        _bar("2025-01-06T15:00:00+00:00", 102.0, 102.9, 101.95, 102.75),
+        _bar("2025-01-06T15:05:00+00:00", 102.75, 102.85, 102.45, 102.55),
+        _bar("2025-01-06T15:10:00+00:00", 102.55, 103.5, 102.5, 103.45),
+    ]
+
+    plan = build_exit_plan(
+        strategy_name="brooks_pullback_count",
+        research_profile="qqq_5m_phase1",
+        bars=bars,
+        signal_time="2025-01-06T15:10:00+00:00",
+        side="long",
+        entry_price=103.45,
+        stop_loss_pct=10.0,
+        take_profit_pct=20.0,
+        exit_policy="pullback_count_session_close",
+    )
+
+    assert plan.stop_price == 102.45
+    assert plan.target_price is None
+    assert plan.stop_reason == "phase1_structural_below_h2_pullback_low"
+    assert plan.target_reason is None
+
+
+def test_phase1_pullback_count_exit_plan_supports_2r_target_policy():
+    bars = [
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 102.4, 101.7, 102.2),
+        _bar("2025-01-06T14:55:00+00:00", 102.2, 102.3, 101.8, 102.0),
+        _bar("2025-01-06T15:00:00+00:00", 102.0, 102.9, 101.95, 102.75),
+        _bar("2025-01-06T15:05:00+00:00", 102.75, 102.85, 102.45, 102.55),
+        _bar("2025-01-06T15:10:00+00:00", 102.55, 103.5, 102.5, 103.45),
+    ]
+
+    plan = build_exit_plan(
+        strategy_name="brooks_pullback_count",
+        research_profile="qqq_5m_phase1",
+        bars=bars,
+        signal_time="2025-01-06T15:10:00+00:00",
+        side="long",
+        entry_price=103.45,
+        stop_loss_pct=10.0,
+        take_profit_pct=20.0,
+        exit_policy="pullback_count_target_2r",
+    )
+
+    assert plan.stop_price == 102.45
+    assert plan.target_price == pytest.approx(105.45)
+    assert plan.target_reason == "pullback_count_target_2r"
+
+
 def test_phase1_breakout_pullback_exit_plan_supports_measured_move_target_policy():
     bars = [
         _bar("2025-01-06T14:30:00+00:00", 100.0, 100.4, 99.9, 100.2),
@@ -305,3 +358,34 @@ def test_phase1_breakout_pullback_low_after_1r_tightens_stop_to_pullback_low():
     assert update.stop_price == 101.2
     assert update.stop_reason == "breakout_pullback_low_after_1r"
     assert update.exit_reason is None
+
+
+def test_phase1_pullback_count_break_even_after_1r_tightens_stop_to_entry():
+    bars = [
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 102.4, 101.7, 102.2),
+        _bar("2025-01-06T14:55:00+00:00", 102.2, 102.3, 101.8, 102.0),
+        _bar("2025-01-06T15:00:00+00:00", 102.0, 102.9, 101.95, 102.75),
+        _bar("2025-01-06T15:05:00+00:00", 102.75, 102.85, 102.45, 102.55),
+        _bar("2025-01-06T15:10:00+00:00", 102.55, 103.5, 102.5, 103.45),
+        _bar("2025-01-06T15:15:00+00:00", 103.45, 104.6, 103.3, 104.4),
+    ]
+
+    update = build_dynamic_exit_update(
+        strategy_name="brooks_pullback_count",
+        research_profile="qqq_5m_phase1",
+        exit_policy="pullback_count_break_even_after_1r",
+        bars=bars,
+        bar_index=len(bars) - 1,
+        ema_values=compute_ema_series(bars, 20),
+        side="long",
+        signal_time="2025-01-06T15:10:00+00:00",
+        entry_price=103.45,
+        current_stop_price=102.45,
+        current_target_price=None,
+        initial_risk=1.0,
+        max_favorable_price=104.6,
+    )
+
+    assert update is not None
+    assert update.stop_price == 103.45
+    assert update.stop_reason == "pullback_count_break_even_after_1r"

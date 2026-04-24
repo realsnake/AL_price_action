@@ -147,6 +147,7 @@ export async function startPhase1PaperStrategy(req?: {
   fixed_quantity?: number;
   stop_loss_pct?: number;
   take_profit_pct?: number;
+  exit_policy?: string | null;
   history_days?: number;
 }): Promise<PaperStrategyStatus> {
   const { data } = await api.post("/paper-strategy/phase1/start", req ?? {});

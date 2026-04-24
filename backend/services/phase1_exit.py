@@ -27,6 +27,28 @@ BREAKOUT_EXIT_POLICIES = (
 
 DEFAULT_BREAKOUT_EXIT_POLICY = BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R
 
+PULLBACK_COUNT_EXIT_POLICY_SESSION_CLOSE = "pullback_count_session_close"
+PULLBACK_COUNT_EXIT_POLICY_TARGET_1R = "pullback_count_target_1r"
+PULLBACK_COUNT_EXIT_POLICY_TARGET_1_5R = "pullback_count_target_1_5r"
+PULLBACK_COUNT_EXIT_POLICY_TARGET_2R = "pullback_count_target_2r"
+PULLBACK_COUNT_EXIT_POLICY_TARGET_2R_BREAK_EVEN_AFTER_0_75R = "pullback_count_target_2r_break_even_after_0_75r"
+PULLBACK_COUNT_EXIT_POLICY_BREAK_EVEN_AFTER_1R = "pullback_count_break_even_after_1r"
+PULLBACK_COUNT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R = "pullback_count_pullback_low_after_1r"
+PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R = "pullback_count_swing_ema_after_1r"
+
+PULLBACK_COUNT_EXIT_POLICIES = (
+    PULLBACK_COUNT_EXIT_POLICY_SESSION_CLOSE,
+    PULLBACK_COUNT_EXIT_POLICY_TARGET_1R,
+    PULLBACK_COUNT_EXIT_POLICY_TARGET_1_5R,
+    PULLBACK_COUNT_EXIT_POLICY_TARGET_2R,
+    PULLBACK_COUNT_EXIT_POLICY_TARGET_2R_BREAK_EVEN_AFTER_0_75R,
+    PULLBACK_COUNT_EXIT_POLICY_BREAK_EVEN_AFTER_1R,
+    PULLBACK_COUNT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R,
+    PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R,
+)
+
+DEFAULT_PULLBACK_COUNT_EXIT_POLICY = PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R
+
 
 @dataclass(frozen=True)
 class ExitPlan:
@@ -61,6 +83,13 @@ class BreakoutContext:
     structural_stop: float
 
 
+@dataclass(frozen=True)
+class PullbackCountContext:
+    pullback_low: float
+    signal_low: float
+    structural_stop: float
+
+
 def resolve_exit_policy(
     *,
     strategy_name: str,
@@ -72,6 +101,11 @@ def resolve_exit_policy(
         and strategy_name == "brooks_breakout_pullback"
     ):
         return exit_policy or DEFAULT_BREAKOUT_EXIT_POLICY
+    if (
+        research_profile == "qqq_5m_phase1"
+        and strategy_name == "brooks_pullback_count"
+    ):
+        return exit_policy or DEFAULT_PULLBACK_COUNT_EXIT_POLICY
     return exit_policy
 
 
@@ -129,6 +163,30 @@ def build_exit_plan(
                 stop_price=breakout_context.structural_stop,
                 target_price=target_price,
                 stop_reason="phase1_structural_below_breakout_pullback_low",
+                target_reason=target_reason,
+            )
+
+    if (
+        research_profile == "qqq_5m_phase1"
+        and strategy_name == "brooks_pullback_count"
+        and side == "long"
+    ):
+        pullback_context = _pullback_count_context(bars, signal_time)
+        policy = resolve_exit_policy(
+            strategy_name=strategy_name,
+            research_profile=research_profile,
+            exit_policy=exit_policy,
+        )
+        if pullback_context is not None and pullback_context.structural_stop < entry_price:
+            target_price, target_reason = _pullback_count_target_for_policy(
+                policy=policy,
+                pullback_context=pullback_context,
+                entry_price=entry_price,
+            )
+            return ExitPlan(
+                stop_price=pullback_context.structural_stop,
+                target_price=target_price,
+                stop_reason="phase1_structural_below_h2_pullback_low",
                 target_reason=target_reason,
             )
 
@@ -232,6 +290,24 @@ def build_dynamic_exit_update(
             max_favorable_price=max_favorable_price,
         )
 
+    if strategy_name == "brooks_pullback_count":
+        return _pullback_count_dynamic_update(
+            policy=resolve_exit_policy(
+                strategy_name=strategy_name,
+                research_profile=research_profile,
+                exit_policy=exit_policy,
+            ),
+            bars=bars,
+            bar_index=bar_index,
+            ema_values=ema_values,
+            signal_time=signal_time,
+            entry_price=entry_price,
+            current_stop_price=current_stop_price,
+            current_target_price=current_target_price,
+            initial_risk=initial_risk,
+            max_favorable_price=max_favorable_price,
+        )
+
     if strategy_name != "brooks_breakout_pullback":
         return None
 
@@ -300,6 +376,82 @@ def build_dynamic_exit_update(
         ):
             return DynamicExitUpdate(
                 exit_reason="phase1_breakout_confirmed_swing_low_break_after_1r",
+                exit_price=float(curr["close"]),
+            )
+
+    return None
+
+
+def _pullback_count_dynamic_update(
+    *,
+    policy: str | None,
+    bars: list[dict],
+    bar_index: int,
+    ema_values: list[float],
+    signal_time: str | None,
+    entry_price: float,
+    current_stop_price: float,
+    current_target_price: float | None,
+    initial_risk: float,
+    max_favorable_price: float,
+) -> DynamicExitUpdate | None:
+    if policy not in PULLBACK_COUNT_EXIT_POLICIES:
+        return None
+    if initial_risk <= 0:
+        return None
+
+    if policy in {
+        PULLBACK_COUNT_EXIT_POLICY_BREAK_EVEN_AFTER_1R,
+        PULLBACK_COUNT_EXIT_POLICY_TARGET_2R_BREAK_EVEN_AFTER_0_75R,
+    }:
+        trigger_r = (
+            0.75
+            if policy == PULLBACK_COUNT_EXIT_POLICY_TARGET_2R_BREAK_EVEN_AFTER_0_75R
+            else 1.0
+        )
+        if max_favorable_price < entry_price + initial_risk * trigger_r:
+            return None
+        if current_stop_price < entry_price:
+            return DynamicExitUpdate(
+                stop_price=entry_price,
+                target_price=current_target_price,
+                stop_reason=policy,
+                target_reason=policy if current_target_price is not None else None,
+            )
+        return None
+
+    if policy == PULLBACK_COUNT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R:
+        if max_favorable_price < entry_price + initial_risk:
+            return None
+        pullback_context = _pullback_count_context(bars, signal_time)
+        if pullback_context is None:
+            return None
+        tightened_stop = max(current_stop_price, pullback_context.pullback_low)
+        if tightened_stop > current_stop_price:
+            return DynamicExitUpdate(
+                stop_price=tightened_stop,
+                target_price=current_target_price,
+                stop_reason=PULLBACK_COUNT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R,
+                target_reason=None,
+            )
+        return None
+
+    if policy == PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R:
+        if max_favorable_price < entry_price + initial_risk:
+            return None
+        if len(ema_values) <= bar_index:
+            return None
+        curr = bars[bar_index]
+        ema_value = float(ema_values[bar_index])
+        confirmed_swing_low = _latest_confirmed_swing_low(bars, bar_index, lookback=1)
+        if (
+            confirmed_swing_low is not None
+            and ema_value > 0
+            and float(curr["close"]) < confirmed_swing_low
+            and float(curr["close"]) < ema_value
+        ):
+            return DynamicExitUpdate(
+                exit_reason="phase1_pullback_count_confirmed_swing_low_break_after_1r",
                 exit_price=float(curr["close"]),
             )
 
@@ -378,6 +530,30 @@ def _breakout_context(
     )
 
 
+def _pullback_count_context(
+    bars: list[dict],
+    signal_time: str | None,
+) -> PullbackCountContext | None:
+    if not signal_time:
+        return None
+
+    signal_index = next(
+        (idx for idx, bar in enumerate(bars) if bar["time"] == signal_time),
+        None,
+    )
+    if signal_index is None or signal_index <= 0:
+        return None
+
+    pullback_bar = bars[signal_index - 1]
+    signal_bar = bars[signal_index]
+    structural_stop = min(float(pullback_bar["low"]), float(signal_bar["low"]))
+    return PullbackCountContext(
+        pullback_low=float(pullback_bar["low"]),
+        signal_low=float(signal_bar["low"]),
+        structural_stop=structural_stop,
+    )
+
+
 def _breakout_target_for_policy(
     *,
     policy: str | None,
@@ -402,6 +578,27 @@ def _breakout_target_for_policy(
     if policy == BREAKOUT_EXIT_POLICY_MEASURED_MOVE:
         measured_move = breakout_context.breakout_high - breakout_context.breakout_low
         return entry_price + measured_move, BREAKOUT_EXIT_POLICY_MEASURED_MOVE
+    return None, None
+
+
+def _pullback_count_target_for_policy(
+    *,
+    policy: str | None,
+    pullback_context: PullbackCountContext,
+    entry_price: float,
+) -> tuple[float | None, str | None]:
+    risk = entry_price - pullback_context.structural_stop
+    if policy == PULLBACK_COUNT_EXIT_POLICY_TARGET_1R:
+        return entry_price + risk, PULLBACK_COUNT_EXIT_POLICY_TARGET_1R
+    if policy == PULLBACK_COUNT_EXIT_POLICY_TARGET_1_5R:
+        return entry_price + risk * 1.5, PULLBACK_COUNT_EXIT_POLICY_TARGET_1_5R
+    if policy == PULLBACK_COUNT_EXIT_POLICY_TARGET_2R:
+        return entry_price + risk * 2.0, PULLBACK_COUNT_EXIT_POLICY_TARGET_2R
+    if policy == PULLBACK_COUNT_EXIT_POLICY_TARGET_2R_BREAK_EVEN_AFTER_0_75R:
+        return (
+            entry_price + risk * 2.0,
+            PULLBACK_COUNT_EXIT_POLICY_TARGET_2R_BREAK_EVEN_AFTER_0_75R,
+        )
     return None, None
 
 

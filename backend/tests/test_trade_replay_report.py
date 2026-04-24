@@ -121,3 +121,51 @@ def test_write_trade_replay_report_describes_breakout_2_5r_break_even_policy_in_
     summary_text = result.summary_path.read_text(encoding="utf-8")
     assert "达到 0.75R 后止损抬到保本位" in summary_text
     assert "固定 2.5R 止盈" in summary_text
+
+
+def test_write_trade_replay_report_describes_pullback_count_dynamic_exit_in_chinese(tmp_path: Path):
+    bars = [
+        _bar("2025-03-24T14:30:00+00:00", 100.0, 100.8, 99.7, 100.5),
+        _bar("2025-03-24T14:35:00+00:00", 100.5, 100.7, 99.9, 100.1),
+        _bar("2025-03-24T14:40:00+00:00", 100.1, 101.2, 100.0, 101.0),
+        _bar("2025-03-24T14:45:00+00:00", 101.0, 102.3, 100.9, 102.0),
+        _bar("2025-03-24T14:50:00+00:00", 102.0, 102.2, 101.0, 101.1),
+    ]
+    trades = [
+        {
+            "entry_time": "2025-03-24T14:40:00+00:00",
+            "exit_time": "2025-03-24T14:50:00+00:00",
+            "side": "long",
+            "entry_price": 101.0,
+            "exit_price": 101.1,
+            "stop_loss": 99.9,
+            "target_price": None,
+            "quantity": 100,
+            "pnl": 10.0,
+            "pnl_pct": 0.1,
+            "reason": "H2 buy: leg 2 pullback reversal in bull trend",
+            "exit_reason": "phase1_pullback_count_confirmed_swing_low_break_after_1r",
+            "stop_reason": "phase1_structural_below_h2_pullback_low",
+            "target_reason": None,
+        }
+    ]
+
+    result = write_trade_replay_report(
+        strategy_name="brooks_pullback_count",
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+        bars=bars,
+        trades=trades,
+        output_dir=tmp_path,
+        stop_loss_pct=2.0,
+        take_profit_pct=4.0,
+    )
+
+    summary_text = result.summary_path.read_text(encoding="utf-8")
+    svg_text = result.chart_paths[0].read_text(encoding="utf-8")
+    assert "H2 多头回调计数：第 2 段回调后重新向上" in summary_text
+    assert "跌破 H2 回调低点" in summary_text
+    assert "这个 phase1 方案里没有固定止盈" in summary_text
+    assert "达到 1R 后跌破确认摆动低点并收回 EMA20 下方" in summary_text
+    assert "H2 多头回调计数" in svg_text

@@ -661,3 +661,43 @@ def test_run_backtest_phase1_breakout_pullback_can_use_2_5r_target_with_0_75r_br
         result.trades[0]["target_reason"]
         == "breakout_target_2_5r_break_even_after_0_75r"
     )
+
+
+def test_run_backtest_phase1_pullback_count_can_use_structural_stop_and_2r_target():
+    bars = [
+        _bar("2025-01-06T14:50:00+00:00", 101.8, 102.4, 101.7, 102.2),
+        _bar("2025-01-06T14:55:00+00:00", 102.2, 102.3, 101.8, 102.0),
+        _bar("2025-01-06T15:00:00+00:00", 102.0, 102.9, 101.95, 102.75),
+        _bar("2025-01-06T15:05:00+00:00", 102.75, 102.85, 102.45, 102.55),
+        _bar("2025-01-06T15:10:00+00:00", 102.55, 103.5, 102.5, 103.45),
+        _bar("2025-01-06T15:15:00+00:00", 103.45, 105.6, 103.3, 105.5),
+        _bar("2025-01-06T20:55:00+00:00", 105.5, 105.6, 105.4, 105.5),
+    ]
+    signals = [
+        Signal(
+            symbol="QQQ",
+            signal_type=SignalType.BUY,
+            price=103.45,
+            quantity=1,
+            reason="H2 buy: pullback count test",
+            timestamp=datetime.fromisoformat("2025-01-06T15:10:00+00:00"),
+        )
+    ]
+
+    result = run_backtest(
+        strategy_name="brooks_pullback_count",
+        signals=signals,
+        bars=bars,
+        stop_loss_pct=50.0,
+        take_profit_pct=50.0,
+        symbol="QQQ",
+        timeframe="5m",
+        research_profile="qqq_5m_phase1",
+        exit_policy="pullback_count_target_2r",
+    )
+
+    assert result.total_trades == 1
+    assert result.trades[0]["exit_reason"] == "take_profit"
+    assert result.trades[0]["stop_loss"] == 102.45
+    assert result.trades[0]["target_price"] == pytest.approx(105.45)
+    assert result.trades[0]["target_reason"] == "pullback_count_target_2r"

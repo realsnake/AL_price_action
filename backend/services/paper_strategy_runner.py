@@ -38,6 +38,7 @@ DEFAULT_PHASE1_STRATEGY = "brooks_small_pb_trend"
 SUPPORTED_PHASE1_STRATEGIES = {
     "brooks_small_pb_trend",
     "brooks_breakout_pullback",
+    "brooks_pullback_count",
 }
 
 

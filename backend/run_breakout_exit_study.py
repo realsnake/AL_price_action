@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from services.phase1_exit import BREAKOUT_EXIT_POLICIES
+from services.phase1_exit import PULLBACK_COUNT_EXIT_POLICIES
 from services.research_validation import build_strategy_validation_report
 from services.research_profile import filter_bars_for_research_profile, get_research_profile
 from services.strategy_engine import get_strategy
@@ -33,9 +34,20 @@ LIMIT = (
     if os.getenv("STUDY_LIMIT", "").strip().lower() in {"", "none", "all"}
     else int(os.getenv("STUDY_LIMIT", "50000"))
 )
+
+
+def policies_for_strategy(strategy_name: str) -> tuple[str, ...]:
+    if strategy_name == "brooks_pullback_count":
+        return PULLBACK_COUNT_EXIT_POLICIES
+    return BREAKOUT_EXIT_POLICIES
+
+
 POLICIES = [
     value.strip()
-    for value in os.getenv("STUDY_EXIT_POLICIES", ",".join(BREAKOUT_EXIT_POLICIES)).split(",")
+    for value in os.getenv(
+        "STUDY_EXIT_POLICIES",
+        ",".join(policies_for_strategy(STRATEGY)),
+    ).split(",")
     if value.strip()
 ]
 PARAMS = json.loads(os.getenv("STUDY_PARAMS_JSON", "{}"))
@@ -190,7 +202,7 @@ def _flatten_report(report: dict) -> dict:
     return {
         "rank": 0,
         "exit_policy": report["exit_policy"],
-        "policy_label": _policy_label(report["exit_policy"]),
+        "policy_label": policy_label(report["exit_policy"]),
         "signals": combined["signals"],
         "trades": combined["trades"],
         "return_pct": combined["return_pct"],
@@ -289,7 +301,7 @@ def _normalize_sqlite_timestamp(value: str) -> str:
     return raw
 
 
-def _policy_label(policy: str) -> str:
+def policy_label(policy: str) -> str:
     mapping = {
         "breakout_session_close": "收盘平仓",
         "breakout_target_1r": "固定 1R 止盈",
@@ -300,6 +312,14 @@ def _policy_label(policy: str) -> str:
         "breakout_break_even_after_1r": "1R 后提到保本",
         "breakout_pullback_low_after_1r": "1R 后提到 pullback low",
         "breakout_swing_ema_after_1r": "1R 后 swing low / EMA20 动态离场",
+        "pullback_count_session_close": "收盘平仓",
+        "pullback_count_target_1r": "固定 1R 止盈",
+        "pullback_count_target_1_5r": "固定 1.5R 止盈",
+        "pullback_count_target_2r": "固定 2R 止盈",
+        "pullback_count_target_2r_break_even_after_0_75r": "0.75R 后保本 + 固定 2R 止盈",
+        "pullback_count_break_even_after_1r": "1R 后提到保本",
+        "pullback_count_pullback_low_after_1r": "1R 后提到 H2 pullback low",
+        "pullback_count_swing_ema_after_1r": "1R 后 swing low / EMA20 动态离场",
     }
     return mapping.get(policy, policy)
 
