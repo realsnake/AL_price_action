@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -18,6 +19,27 @@ from services.trade_executor import refresh_trade_statuses
 
 
 FILLED_STATUSES = {"filled", "partially_filled"}
+STRATEGY_DISPLAY_NAMES = {
+    "manual": "手动",
+    "ma_crossover": "均线交叉",
+    "rsi": "相对强弱指标",
+    "macd": "MACD",
+    "brooks_pullback_count": "H2 多头回调计数",
+    "brooks_breakout_pullback": "突破后回调买入",
+    "brooks_small_pb_trend": "小回调趋势延续",
+}
+ACTION_REASON_LABELS = {
+    "session_close": "收盘平仓",
+    "exit:session_close": "收盘平仓",
+    "stop_loss": "触发止损",
+    "take_profit": "触发止盈",
+    "end_of_data": "数据结束时平仓",
+    "phase1_confirmed_swing_low_break_after_1r": "达到 1R 后跌破确认摆动低点",
+    "phase1_breakout_confirmed_swing_low_break_after_1r": "达到 1R 后跌破确认摆动低点并收回 EMA20 下方",
+    "phase1_pullback_count_confirmed_swing_low_break_after_1r": "达到 1R 后跌破确认摆动低点并收回 EMA20 下方",
+    "Small PB Trend: buy dip in strong bull trend (never touched EMA)": "小回调趋势：强势多头趋势中的逢低买入，期间始终未触及 EMA",
+    "Small PB Trend: sell rally in strong bear trend (never touched EMA)": "小回调趋势：强势空头趋势中的逢高卖出，期间始终未触及 EMA",
+}
 
 
 @dataclass(frozen=True)
@@ -395,19 +417,19 @@ def _render_markdown(review: dict[str, Any]) -> str:
     totals = review["totals"]
     pnl = totals["realized_pnl"]
     lines = [
-        f"# Paper trade review: {review['session_date']}",
+        f"# 纸面交易复盘：{review['session_date']}",
         "",
-        "## Summary",
+        "## 摘要",
         "",
-        f"- Recommendation: `{review['recommendation']}`",
-        f"- Realized PnL: {'+' if pnl >= 0 else ''}{pnl:.2f}",
-        f"- Orders: {totals['orders']} total, {totals['filled_orders']} filled",
-        f"- Buy/Sell quantity: {totals['buy_qty']} / {totals['sell_qty']}",
-        f"- Open positions: {len(totals['open_positions'])}",
+        f"- 建议：`{review['recommendation']}`",
+        f"- 已实现盈亏：{'+' if pnl >= 0 else ''}{pnl:.2f}",
+        f"- 订单数：共 {totals['orders']} 笔，已成交 {totals['filled_orders']} 笔",
+        f"- 买入/卖出数量：{totals['buy_qty']} / {totals['sell_qty']}",
+        f"- 未平仓仓位：{len(totals['open_positions'])}",
         "",
-        "## Strategy Breakdown",
+        "## 策略拆分",
         "",
-        "| Strategy | Orders | Filled | Buy Qty | Sell Qty | Realized PnL | Open | Statuses |",
+        "| 策略 | 订单数 | 成交数 | 买入数量 | 卖出数量 | 已实现盈亏 | 未平数量 | 状态分布 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in review["strategy_summaries"]:
@@ -417,27 +439,55 @@ def _render_markdown(review: dict[str, Any]) -> str:
         )
         lines.append(
             "| "
-            f"{row['strategy']} | {row['orders']} | {row['filled_orders']} | "
+            f"{_format_strategy_label(row['strategy'])} | {row['orders']} | {row['filled_orders']} | "
             f"{row['buy_qty']} | {row['sell_qty']} | {row['realized_pnl']:+.2f} | "
             f"{open_qty} | {statuses or '-'} |"
         )
 
-    lines.extend(["", "## Round Trips", ""])
+    lines.extend(["", "## 已完成回合", ""])
     if review["round_trips"]:
-        lines.append("| Strategy | Qty | Entry | Exit | PnL | Exit Reason |")
-        lines.append("| --- | ---: | ---: | ---: | ---: | --- |")
+        lines.append("| 策略 | 数量 | 入场价 | 出场价 | 盈亏 | 入场动作 | 出场动作 |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | --- | --- |")
         for trade in review["round_trips"]:
             lines.append(
                 "| "
-                f"{trade['strategy']} | {trade['quantity']} | "
+                f"{_format_strategy_label(trade['strategy'])} | {trade['quantity']} | "
                 f"{trade['entry_price']:.2f} | {trade['exit_price']:.2f} | "
-                f"{trade['pnl']:+.2f} | {trade['exit_reason']} |"
+                f"{trade['pnl']:+.2f} | {_format_action_reason(trade['entry_reason'])} | "
+                f"{_format_action_reason(trade['exit_reason'])} |"
             )
     else:
-        lines.append("No completed round trips were recorded for this session.")
+        lines.append("本交易日没有记录到已完成的平仓回合。")
 
-    lines.extend(["", "## Raw Files", "", "- `trades.csv`", "- `round_trips.csv`", "- `review.json`", ""])
+    lines.extend(
+        ["", "## 原始文件", "", "- `trades.csv`", "- `round_trips.csv`", "- `review.json`", ""]
+    )
     return "\n".join(lines)
+
+
+def _format_strategy_label(strategy: str) -> str:
+    zh = STRATEGY_DISPLAY_NAMES.get(strategy)
+    return _format_bilingual(strategy, zh)
+
+
+def _format_action_reason(reason: str) -> str:
+    normalized = reason.strip()
+    if not normalized:
+        return "-"
+
+    zh = ACTION_REASON_LABELS.get(normalized)
+    if zh is None:
+        exit_match = re.fullmatch(r"exit:(.+)", normalized)
+        if exit_match:
+            zh = ACTION_REASON_LABELS.get(exit_match.group(1))
+
+    return _format_bilingual(normalized, zh)
+
+
+def _format_bilingual(english: str, chinese: str | None) -> str:
+    if not chinese or chinese == english:
+        return english
+    return f"{english}（{chinese}）"
 
 
 def _strategy_label(trade: dict[str, Any]) -> str:

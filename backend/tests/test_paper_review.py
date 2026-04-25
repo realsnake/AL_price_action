@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone
 
-from services.paper_review import build_paper_review, default_review_session_date
+from services.paper_review import (
+    _render_markdown,
+    build_paper_review,
+    default_review_session_date,
+)
 
 
 def _trade(
@@ -64,6 +68,53 @@ def test_build_paper_review_flags_open_position():
         {"symbol": "QQQ", "quantity": 25, "strategy": "brooks_pullback_count"}
     ]
     assert review["recommendation"] == "CHECK_OPEN_POSITION"
+
+
+def test_render_markdown_uses_chinese_labels():
+    review = build_paper_review(
+        session_date="2026-04-24",
+        trades=[
+            _trade(
+                1,
+                "2026-04-24T14:00:00+00:00",
+                "buy",
+                25,
+                660.0,
+                strategy="brooks_small_pb_trend",
+                reason="Small PB Trend: buy dip in strong bull trend (never touched EMA)",
+            ),
+            _trade(
+                2,
+                "2026-04-24T15:30:00+00:00",
+                "sell",
+                25,
+                662.5,
+                strategy="brooks_small_pb_trend",
+                reason="phase1_confirmed_swing_low_break_after_1r",
+            ),
+        ],
+    )
+
+    markdown = _render_markdown(review)
+
+    assert "# 纸面交易复盘：2026-04-24" in markdown
+    assert "## 摘要" in markdown
+    assert "- 建议：`OK_CONTINUE_OBSERVING`" in markdown
+    assert "- 已实现盈亏：+62.50" in markdown
+    assert "## 策略拆分" in markdown
+    assert "## 已完成回合" in markdown
+    assert "## 原始文件" in markdown
+    assert "brooks_small_pb_trend（小回调趋势延续）" in markdown
+    assert (
+        "Small PB Trend: buy dip in strong bull trend (never touched EMA)"
+        "（小回调趋势：强势多头趋势中的逢低买入，期间始终未触及 EMA）"
+        in markdown
+    )
+    assert (
+        "phase1_confirmed_swing_low_break_after_1r"
+        "（达到 1R 后跌破确认摆动低点）"
+        in markdown
+    )
 
 
 def test_default_review_session_date_uses_last_closed_us_session():
