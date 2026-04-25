@@ -37,27 +37,142 @@ function toChartTime(iso: string): Time {
 }
 
 function calculateEmaData(bars: Bar[], period: number): LineData[] {
-  if (bars.length < period) {
+  if (bars.length === 0) {
     return [];
   }
 
   const multiplier = 2 / (period + 1);
-  const seed = bars.slice(0, period).reduce((sum, bar) => sum + bar.close, 0) / period;
-  let ema = seed;
-  const emaData: LineData[] = [{
-    time: toChartTime(bars[period - 1].time),
-    value: ema,
-  }];
-
-  for (let index = period; index < bars.length; index += 1) {
-    ema = (bars[index].close - ema) * multiplier + ema;
-    emaData.push({
-      time: toChartTime(bars[index].time),
+  let ema: number | null = null;
+  return bars.map((bar) => {
+    ema = ema == null ? bar.close : bar.close * multiplier + ema * (1 - multiplier);
+    return {
+      time: toChartTime(bar.time),
       value: ema,
-    });
+    };
+  });
+}
+
+function exitReasonLabel(reason: string): string {
+  switch (reason) {
+    case "phase1_confirmed_swing_low_break_after_1r":
+      return "1R small PB swing/EMA exit";
+    case "phase1_pullback_count_confirmed_swing_low_break_after_1r":
+      return "1R swing/EMA exit";
+    case "phase1_breakout_confirmed_swing_low_break_after_1r":
+      return "1R breakout swing/EMA exit";
+    case "stop_loss":
+      return "stop loss";
+    case "take_profit":
+      return "take profit";
+    case "session_close":
+      return "session close";
+    case "manual_stop":
+      return "manual stop";
+    default:
+      return reason.replaceAll("_", " ");
+  }
+}
+
+function markerTimeOrNull(iso: string | null | undefined): Time | null {
+  if (!iso) {
+    return null;
+  }
+  const time = toChartTime(iso);
+  return Number.isNaN(time as number) ? null : time;
+}
+
+function isDynamicExitReason(reason: string | null | undefined): boolean {
+  return reason === "phase1_confirmed_swing_low_break_after_1r"
+    || reason === "phase1_pullback_count_confirmed_swing_low_break_after_1r"
+    || reason === "phase1_breakout_confirmed_swing_low_break_after_1r";
+}
+
+function makeExitMarker(
+  time: Time,
+  text: string,
+  dynamic = false,
+): ChartMarker {
+  return {
+    time,
+    position: "aboveBar" as const,
+    color: dynamic ? "#f97316" : "#ef4444",
+    shape: "arrowDown" as const,
+    text,
+  };
+}
+
+function latestDynamicExitTriggerTime(runnerStatus: PaperStrategyStatus): Time | null {
+  const dynamicExit = runnerStatus.dynamic_exit;
+  if (dynamicExit?.triggered) {
+    return markerTimeOrNull(dynamicExit.bar_time);
+  }
+  return null;
+}
+
+function paperExitMarker(runnerStatus: PaperStrategyStatus): ChartMarker[] {
+  const label = strategyLabel(runnerStatus.strategy);
+  const lastExit = runnerStatus.last_exit;
+  if (lastExit != null) {
+    const exitTime = markerTimeOrNull(lastExit.exit_time);
+    if (exitTime == null) {
+      return [];
+    }
+    return [makeExitMarker(
+      exitTime,
+      `${label} EXIT ${lastExit.quantity} @ $${lastExit.exit_price.toFixed(2)} · ${exitReasonLabel(lastExit.reason)}`,
+      isDynamicExitReason(lastExit.reason),
+    )];
   }
 
-  return emaData;
+  const pendingExit = runnerStatus.pending_order;
+  if (pendingExit?.side === "sell") {
+    const pendingTime = markerTimeOrNull(pendingExit.signal_time);
+    if (pendingTime == null) {
+      return [];
+    }
+    return [makeExitMarker(
+      pendingTime,
+      `${label} EXIT PENDING ${pendingExit.quantity} · ${exitReasonLabel(pendingExit.reason)}`,
+      isDynamicExitReason(pendingExit.reason),
+    )];
+  }
+
+  const triggerTime = latestDynamicExitTriggerTime(runnerStatus);
+  if (triggerTime == null || runnerStatus.dynamic_exit?.trigger_price == null) {
+    return [];
+  }
+
+  return [makeExitMarker(
+    triggerTime,
+    `${label} DYNAMIC EXIT $${runnerStatus.dynamic_exit.trigger_price.toFixed(2)} · ${exitReasonLabel(runnerStatus.dynamic_exit.trigger_reason ?? "")}`,
+    true,
+  )];
+}
+
+function paperEntryMarker(runnerStatus: PaperStrategyStatus): ChartMarker[] {
+  const position = runnerStatus.position;
+  if (position == null) {
+    return [];
+  }
+  const label = strategyLabel(runnerStatus.strategy);
+  const targetText =
+    position.target_price == null
+      ? "no fixed TP"
+      : `TP $${position.target_price.toFixed(2)}`;
+  return [{
+    time: toChartTime(position.signal_time ?? position.entry_time),
+    position: "belowBar" as const,
+    color: strategyColor(runnerStatus.strategy),
+    shape: "arrowUp" as const,
+    text: `${label} ENTRY ${position.quantity} @ $${position.entry_price.toFixed(2)} · SL $${position.stop_price.toFixed(2)} · ${targetText}`,
+  }];
+}
+
+function paperRunnerMarkers(runnerStatus: PaperStrategyStatus): ChartMarker[] {
+  return [
+    ...paperEntryMarker(runnerStatus),
+    ...paperExitMarker(runnerStatus),
+  ];
 }
 
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
@@ -289,24 +404,7 @@ export default function Chart({
         shape: s.signal_type === "buy" ? ("arrowUp" as const) : ("arrowDown" as const),
         text: `${s.signal_type.toUpperCase()} $${s.price.toFixed(2)}`,
       }));
-      const runnerMarkers: ChartMarker[] = paperRunnerStatuses.flatMap((runnerStatus) => {
-        const position = runnerStatus.position;
-        if (position == null) {
-          return [];
-        }
-        const label = strategyLabel(runnerStatus.strategy);
-        const targetText =
-          position.target_price == null
-            ? "no fixed TP"
-            : `TP $${position.target_price.toFixed(2)}`;
-        return [{
-          time: toChartTime(position.signal_time ?? position.entry_time),
-          position: "belowBar" as const,
-          color: strategyColor(runnerStatus.strategy),
-          shape: "arrowUp" as const,
-          text: `${label} ENTRY ${position.quantity} @ $${position.entry_price.toFixed(2)} · SL $${position.stop_price.toFixed(2)} · ${targetText}`,
-        }];
-      });
+      const runnerMarkers = paperRunnerStatuses.flatMap(paperRunnerMarkers);
       const markers = [...signalMarkers, ...runnerMarkers];
       markers.sort((a, b) => (a.time as number) - (b.time as number));
       markersRef.current.setMarkers(markers);
@@ -331,42 +429,65 @@ export default function Chart({
 
     const nextLines: IPriceLine[] = [];
     for (const runnerStatus of paperRunnerStatuses) {
-      const position = runnerStatus.position;
-      if (position == null) {
-        continue;
-      }
-
       const label = strategyLabel(runnerStatus.strategy);
-      const color = strategyColor(runnerStatus.strategy);
-      const targetText =
-        position.target_price == null
-          ? "no fixed TP"
-          : `TP $${position.target_price.toFixed(2)}`;
+      const position = runnerStatus.position;
+      if (position != null) {
+        const color = strategyColor(runnerStatus.strategy);
+        const targetText =
+          position.target_price == null
+            ? "no fixed TP"
+            : `TP $${position.target_price.toFixed(2)}`;
 
-      nextLines.push(candleRef.current.createPriceLine({
-        price: position.entry_price,
-        color,
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
-        title: `${label} entry ${position.quantity} @ ${position.entry_price.toFixed(2)} · ${targetText}`,
-      }));
-      nextLines.push(candleRef.current.createPriceLine({
-        price: position.stop_price,
-        color: "#fb7185",
-        lineWidth: 2,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: `${label} stop ${position.stop_price.toFixed(2)} · ${position.stop_reason}`,
-      }));
-      if (position.target_price != null) {
         nextLines.push(candleRef.current.createPriceLine({
-          price: position.target_price,
-          color: "#34d399",
+          price: position.entry_price,
+          color,
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: `${label} entry ${position.quantity} @ ${position.entry_price.toFixed(2)} · ${targetText}`,
+        }));
+        nextLines.push(candleRef.current.createPriceLine({
+          price: position.stop_price,
+          color: "#fb7185",
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `${label} target ${position.target_price.toFixed(2)} · ${position.target_reason ?? "take profit"}`,
+          title: `${label} stop ${position.stop_price.toFixed(2)} · ${position.stop_reason}`,
+        }));
+        if (position.target_price != null) {
+          nextLines.push(candleRef.current.createPriceLine({
+            price: position.target_price,
+            color: "#34d399",
+            lineWidth: 2,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `${label} target ${position.target_price.toFixed(2)} · ${position.target_reason ?? "take profit"}`,
+          }));
+        }
+      }
+
+      const dynamicExit = runnerStatus.dynamic_exit;
+      if (dynamicExit == null) {
+        continue;
+      }
+
+      nextLines.push(candleRef.current.createPriceLine({
+        price: dynamicExit.one_r_price,
+        color: dynamicExit.armed ? "#fbbf24" : "#78716c",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: `${label} 1R ${dynamicExit.armed ? "armed" : "waiting"} @ ${dynamicExit.one_r_price.toFixed(2)}`,
+      }));
+
+      if (dynamicExit.swing_low != null) {
+        nextLines.push(candleRef.current.createPriceLine({
+          price: dynamicExit.swing_low,
+          color: dynamicExit.triggered ? "#f97316" : dynamicExit.armed ? "#f59e0b" : "#92400e",
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `${label} dynamic exit ${dynamicExit.triggered ? "TRIGGERED" : dynamicExit.armed ? "armed" : "waiting 1R"}: close < swing ${dynamicExit.swing_low.toFixed(2)} + EMA20`,
         }));
       }
     }

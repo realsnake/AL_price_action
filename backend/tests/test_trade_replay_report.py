@@ -168,7 +168,7 @@ def test_write_trade_replay_report_describes_pullback_count_dynamic_exit_in_chin
     svg_text = result.chart_paths[0].read_text(encoding="utf-8")
     assert "H2 多头回调计数：第 2 段回调后重新向上" in summary_text
     assert "跌破 H2 回调低点" in summary_text
-    assert "这个 phase1 方案里没有固定止盈" in summary_text
+    assert "这个 QQQ 5m Brooks 组合里没有固定止盈" in summary_text
     assert "达到 1R 后跌破确认摆动低点并收回 EMA20 下方" in summary_text
     assert "H2 多头回调计数" in svg_text
     assert "EMA20 趋势线" in svg_text

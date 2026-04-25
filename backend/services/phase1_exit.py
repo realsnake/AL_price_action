@@ -49,6 +49,8 @@ PULLBACK_COUNT_EXIT_POLICIES = (
 
 DEFAULT_PULLBACK_COUNT_EXIT_POLICY = PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R
 
+SMALL_PB_EXIT_POLICY_SWING_EMA_AFTER_1R = "small_pb_trend_swing_ema_after_1r"
+
 
 @dataclass(frozen=True)
 class ExitPlan:
@@ -72,6 +74,20 @@ class DynamicExitUpdate:
     target_reason: str | None = None
     exit_reason: str | None = None
     exit_price: float | None = None
+
+
+@dataclass(frozen=True)
+class DynamicExitVisualization:
+    policy: str
+    armed: bool
+    one_r_price: float
+    bar_time: str
+    ema20: float | None
+    swing_low: float | None
+    swing_low_time: str | None
+    triggered: bool
+    trigger_reason: str | None
+    trigger_price: float | None
 
 
 @dataclass(frozen=True)
@@ -382,6 +398,81 @@ def build_dynamic_exit_update(
     return None
 
 
+def build_dynamic_exit_visualization(
+    *,
+    strategy_name: str,
+    research_profile: str | None,
+    exit_policy: str | None = None,
+    bars: list[dict],
+    bar_index: int,
+    ema_values: list[float],
+    side: str,
+    signal_time: str | None,
+    entry_price: float,
+    initial_risk: float,
+    max_favorable_price: float,
+) -> DynamicExitVisualization | None:
+    if side != "long" or bar_index <= 0 or bar_index >= len(bars):
+        return None
+    if research_profile != "qqq_5m_phase1" or initial_risk <= 0:
+        return None
+
+    if strategy_name == "brooks_small_pb_trend":
+        policy = SMALL_PB_EXIT_POLICY_SWING_EMA_AFTER_1R
+        trigger_reason = "phase1_confirmed_swing_low_break_after_1r"
+        supported_policy = SMALL_PB_EXIT_POLICY_SWING_EMA_AFTER_1R
+    elif strategy_name == "brooks_breakout_pullback":
+        policy = resolve_exit_policy(
+            strategy_name=strategy_name,
+            research_profile=research_profile,
+            exit_policy=exit_policy,
+        )
+        trigger_reason = "phase1_breakout_confirmed_swing_low_break_after_1r"
+        supported_policy = BREAKOUT_EXIT_POLICY_SWING_EMA_AFTER_1R
+    elif strategy_name == "brooks_pullback_count":
+        policy = resolve_exit_policy(
+            strategy_name=strategy_name,
+            research_profile=research_profile,
+            exit_policy=exit_policy,
+        )
+        trigger_reason = "phase1_pullback_count_confirmed_swing_low_break_after_1r"
+        supported_policy = PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R
+    else:
+        return None
+    if policy != supported_policy:
+        return None
+
+    curr = bars[bar_index]
+    one_r_price = entry_price + initial_risk
+    armed = max_favorable_price >= one_r_price
+    ema20 = float(ema_values[bar_index]) if len(ema_values) > bar_index else None
+    swing_low_info = _latest_confirmed_swing_low_info(bars, bar_index, lookback=1)
+    swing_low = swing_low_info[0] if swing_low_info is not None else None
+    swing_low_time = swing_low_info[1] if swing_low_info is not None else None
+    trigger_price = float(curr["close"])
+    triggered = (
+        armed
+        and swing_low is not None
+        and ema20 is not None
+        and ema20 > 0
+        and trigger_price < swing_low
+        and trigger_price < ema20
+    )
+
+    return DynamicExitVisualization(
+        policy=policy,
+        armed=armed,
+        one_r_price=one_r_price,
+        bar_time=str(curr["time"]),
+        ema20=ema20,
+        swing_low=swing_low,
+        swing_low_time=swing_low_time,
+        triggered=triggered,
+        trigger_reason=trigger_reason if triggered else None,
+        trigger_price=trigger_price if triggered else None,
+    )
+
+
 def _pullback_count_dynamic_update(
     *,
     policy: str | None,
@@ -607,7 +698,17 @@ def _latest_confirmed_swing_low(
     current_index: int,
     lookback: int,
 ) -> float | None:
+    latest = _latest_confirmed_swing_low_info(bars, current_index, lookback)
+    return latest[0] if latest is not None else None
+
+
+def _latest_confirmed_swing_low_info(
+    bars: list[dict],
+    current_index: int,
+    lookback: int,
+) -> tuple[float, str] | None:
     latest: float | None = None
+    latest_time: str | None = None
     end_center = current_index - lookback
     for center in range(lookback, end_center + 1):
         low = float(bars[center]["low"])
@@ -620,7 +721,10 @@ def _latest_confirmed_swing_low(
                 break
         if is_swing_low:
             latest = low
-    return latest
+            latest_time = str(bars[center]["time"])
+    if latest is None or latest_time is None:
+        return None
+    return latest, latest_time
 
 
 def _is_strong_bear(bar: dict, threshold: float) -> bool:

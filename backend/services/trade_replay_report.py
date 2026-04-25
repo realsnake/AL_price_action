@@ -12,6 +12,7 @@ from services.research_profile import canonical_timestamp, market_time, session_
 
 SVG_WIDTH = 1440
 SVG_HEIGHT = 860
+BROOKS_COMBO_LABEL = "QQQ 5m Brooks 组合"
 PLOT_LEFT = 64
 PLOT_TOP = 56
 PLOT_WIDTH = 980
@@ -692,7 +693,7 @@ def _render_strategy_summary(strategy_name: str) -> str:
                 "而是先确认价格在强势多头环境里，然后等待第二段回调结束，只有反转 K 线重新向上突破前一根高点时才做多。"
             ),
             "points": [
-                ("交易方向", "只做多，适配 qqq_5m_phase1 的美股常规交易时段。"),
+                ("交易方向", f"只做多，适配 {BROOKS_COMBO_LABEL} 的美股常规交易时段。"),
                 ("入场条件", "H2 回调反转：第二段回调后出现强阳线，并突破上一根 K 线高点。"),
                 ("过滤条件", "价格在 EMA20 上方、EMA20 向上、收盘高于当日开盘，并高于 session VWAP 缓冲。"),
                 ("出场逻辑", "结构止损放在 H2 回调低点下方；无固定止盈，达到 1R 后用 swing low / EMA20 动态离场，或收盘平仓。"),
@@ -705,7 +706,7 @@ def _render_strategy_summary(strategy_name: str) -> str:
                 "再在回调恢复向上时做多。"
             ),
             "points": [
-                ("交易方向", "只做多，运行在 QQQ 5 分钟 phase1 研究配置。"),
+                ("交易方向", f"只做多，运行在 {BROOKS_COMBO_LABEL} 研究配置。"),
                 ("入场条件", "多头突破后回调守住结构，再重新向上确认。"),
                 ("过滤条件", "关注趋势、突破质量和回调防守，不交易弱突破或破坏结构的回调。"),
                 ("出场逻辑", "结构止损放在 breakout/pullback 低点下方，默认 0.75R 后保本并以 2.5R 目标管理。"),
@@ -718,7 +719,7 @@ def _render_strategy_summary(strategy_name: str) -> str:
                 "在价格恢复顺趋势推进时做多。"
             ),
             "points": [
-                ("交易方向", "只做多，运行在 QQQ 5 分钟 phase1 研究配置。"),
+                ("交易方向", f"只做多，运行在 {BROOKS_COMBO_LABEL} 研究配置。"),
                 ("入场条件", "强趋势内的小回调结束后，价格重新顺趋势向上。"),
                 ("过滤条件", "关注趋势延续质量，避免在深回调或趋势破坏后追入。"),
                 ("出场逻辑", "结构止损放在信号回调低点下方；达到 1R 后用确认回调低点和 EMA20 动态离场。"),
@@ -807,7 +808,7 @@ def _describe_stop_reason(reason: str | None, stop_loss_pct: float) -> str:
 
 def _describe_target_reason(reason: str | None, take_profit_pct: float) -> str:
     if reason is None:
-        return "这个 phase1 方案里没有固定止盈"
+        return f"这个 {BROOKS_COMBO_LABEL}里没有固定止盈"
     mapping = {
         "fixed_pct_take_profit": f"固定 {take_profit_pct:.1f}% 止盈",
         "breakout_target_1r": "固定 1R 止盈",

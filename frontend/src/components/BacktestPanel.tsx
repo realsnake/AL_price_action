@@ -12,13 +12,14 @@ import type {
 const RESEARCH_SYMBOL = "QQQ";
 const RESEARCH_TIMEFRAME: Timeframe = "5m";
 const RESEARCH_PROFILE: ResearchProfile = "qqq_5m_phase1";
+const BROOKS_COMBO_LABEL = "QQQ 5m Brooks 组合";
 const STRUCTURAL_PHASE1_EXIT_DESCRIPTIONS: Record<string, string> = {
   brooks_breakout_pullback:
-    "`brooks_breakout_pullback` 在 `qqq_5m_phase1` 下会使用 breakout / pullback 结构低点止损，达到 `0.75R` 后把止损抬到保本位，固定 `2.5R` 止盈，仍保留收盘强平。",
+    `\`brooks_breakout_pullback\` 在 \`${BROOKS_COMBO_LABEL}\` 下会使用 breakout / pullback 结构低点止损，达到 \`0.75R\` 后把止损抬到保本位，固定 \`2.5R\` 止盈，仍保留收盘强平。`,
   brooks_pullback_count:
-    "`brooks_pullback_count` 在 `qqq_5m_phase1` 下会使用 H2 回调低点结构止损，达到 `1R` 后跌破已确认摆动低点并收回 `EMA20` 下方动态离场，仍保留收盘强平。",
+    `\`brooks_pullback_count\` 在 \`${BROOKS_COMBO_LABEL}\` 下会使用 H2 回调低点结构止损，达到 \`1R\` 后跌破已确认摆动低点并收回 \`EMA20\` 下方动态离场，仍保留收盘强平。`,
   brooks_small_pb_trend:
-    "`brooks_small_pb_trend` 在 `qqq_5m_phase1` 下会使用结构止损 + `1R` 后跌破已确认回调低点并收回 `EMA20` 下方的动态离场，仍保留收盘强平。",
+    `\`brooks_small_pb_trend\` 在 \`${BROOKS_COMBO_LABEL}\` 下会使用结构止损 + \`1R\` 后跌破已确认回调低点并收回 \`EMA20\` 下方的动态离场，仍保留收盘强平。`,
 };
 
 interface BacktestPanelProps {
@@ -238,7 +239,7 @@ export default function BacktestPanel({
         <div className="space-y-1 border-t border-white/10 pt-2">
           <p className="rounded-lg border border-cyan-400/10 bg-cyan-400/5 px-3 py-2 text-xs text-cyan-100">
             Fixed research path: {RESEARCH_SYMBOL} on {RESEARCH_TIMEFRAME} bars
-            with the {RESEARCH_PROFILE} profile.
+            with the {BROOKS_COMBO_LABEL} profile.
           </p>
           {usesStructuralPhase1Exits && (
             <p className="rounded-lg border border-amber-400/10 bg-amber-400/5 px-3 py-2 text-xs text-amber-100">

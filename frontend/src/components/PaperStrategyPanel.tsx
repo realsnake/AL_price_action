@@ -24,6 +24,7 @@ interface PaperStrategyPanelProps {
 }
 
 const DEFAULT_PHASE1_STRATEGY: Phase1StrategyName = "brooks_breakout_pullback";
+const BROOKS_COMBO_LABEL = "QQQ 5m Brooks 组合";
 
 const PHASE1_STRATEGY_META: Record<
   Phase1StrategyName,
@@ -32,17 +33,17 @@ const PHASE1_STRATEGY_META: Record<
   brooks_breakout_pullback: {
     label: "Breakout pullback",
     detail:
-      "qqq_5m_phase1 · 结构止损到 breakout/pullback 低点下方 · 0.75R 后提到保本 · 2.5R 固定止盈 · 收盘强平",
+      `${BROOKS_COMBO_LABEL} · 结构止损到 breakout/pullback 低点下方 · 0.75R 后提到保本 · 2.5R 固定止盈 · 收盘强平`,
   },
   brooks_pullback_count: {
     label: "Pullback count",
     detail:
-      "qqq_5m_phase1 · H2 多头回调计数 · 观察仓默认 50 股 · 结构止损到 H2 回调低点 · 1R 后跌破确认摆动低点并收回 EMA20 下方动态离场",
+      `${BROOKS_COMBO_LABEL} · H2 多头回调计数 · 观察仓默认 50 股 · 结构止损到 H2 回调低点 · 1R 后跌破确认摆动低点并收回 EMA20 下方动态离场`,
   },
   brooks_small_pb_trend: {
     label: "Small pullback trend",
     detail:
-      "qqq_5m_phase1 · 结构止损 · 1R 后跌破已确认回调低点并收回 EMA20 下方动态离场",
+      `${BROOKS_COMBO_LABEL} · 结构止损 · 1R 后跌破已确认回调低点并收回 EMA20 下方动态离场`,
   },
 };
 
@@ -182,7 +183,7 @@ export default function PaperStrategyPanel({
             Auto Paper
           </p>
           <h3 className="mt-2 text-sm font-semibold text-cyan-50">
-            QQQ 5m phase1 runner
+            {BROOKS_COMBO_LABEL}
           </h3>
           <p className="mt-1 text-xs text-slate-400">
             {status?.strategy ?? selectedStrategy} · {strategyMeta.detail}
@@ -202,7 +203,7 @@ export default function PaperStrategyPanel({
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
         <div>
           <label className="mb-1 block text-xs text-slate-400">
-            Phase1 strategy
+            Brooks strategy
           </label>
           <select
             value={selectedStrategy}
@@ -266,7 +267,7 @@ export default function PaperStrategyPanel({
         <div className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-3 text-sm">
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-400">
-              Phase1 preflight
+              Brooks 组合预检
             </p>
             <span
               className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
@@ -441,7 +442,7 @@ export default function PaperStrategyPanel({
         <div className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-3 text-sm">
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-400">
-              Recent phase1 trades
+              Recent Brooks combo trades
             </p>
             <span className="text-[11px] text-slate-500">{recentTrades.length} shown</span>
           </div>
@@ -468,7 +469,7 @@ export default function PaperStrategyPanel({
                   <span>${trade.price.toFixed(2)}</span>
                 </div>
                 <p className="mt-1 text-xs text-slate-400">
-                  {trade.signal_reason || "phase1 trade"}
+                  {trade.signal_reason || "Brooks combo trade"}
                 </p>
               </div>
             ))}
@@ -497,7 +498,7 @@ export default function PaperStrategyPanel({
           disabled={!canStop}
           className="flex-1 rounded-xl bg-slate-700 py-2 text-sm font-medium text-white transition hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Stop runner
+          Stop Brooks combo
         </button>
       </div>
     </div>

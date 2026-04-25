@@ -1347,3 +1347,92 @@ def test_get_phase1_paper_runner_readiness_surfaces_configuration_warnings(
     assert readiness["next_session_open"] == "2026-04-20T13:30:00+00:00"
     assert "PAPER_TRADING is disabled" in readiness["warnings"]
     assert "Alpaca credentials are not configured" in readiness["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_restore_desired_phase1_runners_waits_until_market_open(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+    start_calls = []
+
+    async def fake_configs():
+        return [
+            paper_strategy_runner.Phase1PaperConfig(
+                strategy="brooks_small_pb_trend",
+            )
+        ]
+
+    async def fake_start(**kwargs):
+        start_calls.append(kwargs)
+        return {"running": True}
+
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_market_session_snapshot",
+        lambda: {
+            "market_session": "closed",
+            "current_session_open": None,
+            "current_session_close": None,
+            "next_session_open": "2026-04-27T13:30:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_get_desired_phase1_runner_configs",
+        fake_configs,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_start_phase1_paper_runner",
+        fake_start,
+    )
+
+    restored = await paper_strategy_runner.restore_desired_phase1_paper_runners()
+
+    assert restored == []
+    assert start_calls == []
+
+
+@pytest.mark.asyncio
+async def test_restore_desired_phase1_runners_stops_active_runners_after_close(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+    stop_calls = []
+    inactive_calls = []
+
+    class FakeRunner:
+        def __init__(self):
+            self.running = True
+            self.config = paper_strategy_runner.Phase1PaperConfig(
+                strategy="brooks_small_pb_trend",
+            )
+
+        async def stop(self, close_position: bool = True):
+            stop_calls.append(close_position)
+            self.running = False
+            return {"running": False}
+
+    async def fake_mark_inactive(strategy: str):
+        inactive_calls.append(strategy)
+
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"] = FakeRunner()
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_market_session_snapshot",
+        lambda: {
+            "market_session": "closed",
+            "current_session_open": None,
+            "current_session_close": None,
+            "next_session_open": "2026-04-27T13:30:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_mark_desired_phase1_runner_inactive",
+        fake_mark_inactive,
+    )
+
+    restored = await paper_strategy_runner.restore_desired_phase1_paper_runners()
+
+    assert restored == []
+    assert stop_calls == [True]
+    assert inactive_calls == []
+    assert "brooks_small_pb_trend" not in paper_strategy_runner._phase1_runners

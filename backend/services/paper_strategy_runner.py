@@ -20,7 +20,11 @@ from services import market_data, trade_updates
 from services.alpaca_client import alpaca_client
 from services.analysis_bars import get_analysis_bars
 from services.phase1_exit import build_exit_plan
-from services.phase1_exit import build_dynamic_exit_update, compute_ema_series
+from services.phase1_exit import (
+    build_dynamic_exit_update,
+    build_dynamic_exit_visualization,
+    compute_ema_series,
+)
 from services.research_profile import (
     is_rth_bar_timestamp,
     is_session_final_bar_timestamp,
@@ -40,6 +44,7 @@ from strategies.base import SignalType
 logger = logging.getLogger(__name__)
 
 DEFAULT_PHASE1_STRATEGY = "brooks_small_pb_trend"
+BROOKS_COMBO_LABEL = "QQQ 5m Brooks 组合"
 SUPPORTED_PHASE1_STRATEGIES = {
     "brooks_small_pb_trend",
     "brooks_breakout_pullback",
@@ -88,6 +93,14 @@ class PendingOrder:
 
 
 @dataclass
+class LastExit:
+    quantity: int
+    exit_price: float
+    exit_time: str
+    reason: str
+
+
+@dataclass
 class RunnerEvent:
     timestamp: str
     type: str
@@ -103,6 +116,7 @@ class Phase1PaperRunner:
         self.partial_slot_time: str | None = None
         self.position: LivePosition | None = None
         self.pending_order: PendingOrder | None = None
+        self.last_exit: LastExit | None = None
         self.running = False
         self.lock = asyncio.Lock()
         self.orders_submitted = 0
@@ -125,7 +139,7 @@ class Phase1PaperRunner:
             research_profile=self.config.research_profile,
         )
         if not self.bars:
-            raise RuntimeError("No historical bars available for phase-1 paper runner")
+            raise RuntimeError(f"No historical bars available for {BROOKS_COMBO_LABEL}")
 
         await self._restore_broker_state()
         self.running = True
@@ -155,7 +169,7 @@ class Phase1PaperRunner:
 
         await market_data.unsubscribe(self.config.symbol, self._on_live_bar)
         remove_trade_listener(self._on_trade_update)
-        self._record_event("runner_stopped", "Phase1 paper runner stopped")
+        self._record_event("runner_stopped", f"{BROOKS_COMBO_LABEL} stopped")
         return self.status()
 
     def status(self) -> dict:
@@ -178,11 +192,32 @@ class Phase1PaperRunner:
             "last_trade_update_at": self.last_trade_update_at,
             "orders_submitted": self.orders_submitted,
             "position": None if self.position is None else asdict(self.position),
+            "dynamic_exit": self._dynamic_exit_status(),
+            "last_exit": None if self.last_exit is None else asdict(self.last_exit),
             "pending_order": None if self.pending_order is None else asdict(self.pending_order),
             "last_error": self.last_error,
             "warnings": self._status_warnings(),
             "recent_events": [asdict(event) for event in self.recent_events],
         }
+
+    def _dynamic_exit_status(self) -> dict | None:
+        if self.position is None or not self.bars:
+            return None
+
+        visualization = build_dynamic_exit_visualization(
+            strategy_name=self.config.strategy,
+            research_profile=self.config.research_profile,
+            exit_policy=self.config.exit_policy,
+            bars=self.bars,
+            bar_index=len(self.bars) - 1,
+            ema_values=compute_ema_series(self.bars, 20),
+            side="long",
+            signal_time=self.position.signal_time,
+            entry_price=self.position.entry_price,
+            initial_risk=self.position.initial_risk,
+            max_favorable_price=self.position.max_favorable_price,
+        )
+        return None if visualization is None else asdict(visualization)
 
     async def _on_live_bar(self, symbol: str, payload: dict) -> None:
         if not self.running or "time" not in payload:
@@ -197,7 +232,7 @@ class Phase1PaperRunner:
             except Exception as exc:
                 self.last_error = str(exc)
                 self._record_event("runner_error", str(exc))
-                logger.exception("Phase-1 paper runner failed on live bar")
+                logger.exception("%s failed on live bar", BROOKS_COMBO_LABEL)
 
     async def _ingest_live_bar(self, bar: dict) -> None:
         if not is_rth_bar_timestamp(bar["time"]):
@@ -376,6 +411,7 @@ class Phase1PaperRunner:
                 initial_risk=abs(filled_price - exit_plan.stop_price),
                 max_favorable_price=filled_price,
             )
+            self.last_exit = None
             self._record_event(
                 "position_opened",
                 f"Opened {self.position.quantity} @ {filled_price:.2f}",
@@ -409,8 +445,18 @@ class Phase1PaperRunner:
             f"Submitted sell {self.position.quantity} ({reason})",
         )
         if trade_info.get("status") == "filled":
+            filled_price = float(trade_info.get("price") or exit_price)
+            self.last_exit = LastExit(
+                quantity=self.position.quantity,
+                exit_price=filled_price,
+                exit_time=exit_time,
+                reason=reason,
+            )
             self.position = None
-            self._record_event("position_closed", f"Closed position via {reason}")
+            self._record_event(
+                "position_closed",
+                f"Closed position via {reason} @ {filled_price:.2f}",
+            )
             return
 
         self.pending_order = PendingOrder(
@@ -546,8 +592,12 @@ class Phase1PaperRunner:
             stop_reason=exit_plan.stop_reason,
             target_reason=exit_plan.target_reason,
             initial_risk=abs(entry_price - exit_plan.stop_price),
-            max_favorable_price=entry_price,
+            max_favorable_price=self._max_favorable_price_since(
+                recovered_signal_time,
+                entry_price,
+            ),
         )
+        self.last_exit = None
         self._record_event(
             "position_recovered",
             f"Recovered {quantity} shares @ {entry_price:.2f}",
@@ -596,15 +646,30 @@ class Phase1PaperRunner:
                     stop_reason=exit_plan.stop_reason,
                     target_reason=exit_plan.target_reason,
                     initial_risk=abs(entry_price - exit_plan.stop_price),
-                    max_favorable_price=entry_price,
+                    max_favorable_price=self._max_favorable_price_since(
+                        self.pending_order.signal_time,
+                        entry_price,
+                    ),
                 )
+                self.last_exit = None
                 self._record_event(
                     "position_opened",
                     f"Opened {quantity} @ {entry_price:.2f}",
                 )
             else:
+                exit_price = float(order.get("filled_avg_price") or 0.0)
+                quantity = int(float(order.get("filled_qty") or order.get("qty") or self.pending_order.quantity))
+                self.last_exit = LastExit(
+                    quantity=quantity,
+                    exit_price=exit_price,
+                    exit_time=self.pending_order.signal_time,
+                    reason=self.pending_order.reason,
+                )
                 self.position = None
-                self._record_event("position_closed", "Closed position from broker refresh")
+                self._record_event(
+                    "position_closed",
+                    f"Closed position from broker refresh @ {exit_price:.2f}",
+                )
 
         self.pending_order = None
 
@@ -653,15 +718,28 @@ class Phase1PaperRunner:
                         stop_reason=exit_plan.stop_reason,
                         target_reason=exit_plan.target_reason,
                         initial_risk=abs(price - exit_plan.stop_price),
-                        max_favorable_price=price,
+                        max_favorable_price=self._max_favorable_price_since(
+                            self.pending_order.signal_time,
+                            price,
+                        ),
                     )
+                    self.last_exit = None
                     self._record_event(
                         "position_opened",
                         f"Opened {qty} @ {price:.2f}",
                     )
                 elif side == "sell":
+                    self.last_exit = LastExit(
+                        quantity=qty,
+                        exit_price=price,
+                        exit_time=self.pending_order.signal_time,
+                        reason=reason or self.pending_order.reason,
+                    )
                     self.position = None
-                    self._record_event("position_closed", "Closed position from trade update")
+                    self._record_event(
+                        "position_closed",
+                        f"Closed position from trade update @ {price:.2f}",
+                    )
                 self.pending_order = None
                 return
 
@@ -681,6 +759,22 @@ class Phase1PaperRunner:
                 type=event_type,
                 message=message,
             )
+        )
+
+    def _max_favorable_price_since(self, signal_time: str | None, fallback: float) -> float:
+        if signal_time is None:
+            return fallback
+
+        signal_index = next(
+            (idx for idx, bar in enumerate(self.bars) if bar["time"] == signal_time),
+            None,
+        )
+        if signal_index is None:
+            return fallback
+
+        return max(
+            fallback,
+            max(float(bar["high"]) for bar in self.bars[signal_index:]),
         )
 
     def _status_warnings(self) -> list[str]:
@@ -734,6 +828,8 @@ def _empty_runner_status(strategy: str = DEFAULT_PHASE1_STRATEGY) -> dict:
         "last_trade_update_at": None,
         "orders_submitted": 0,
         "position": None,
+        "dynamic_exit": None,
+        "last_exit": None,
         "pending_order": None,
         "last_error": None,
         "warnings": [],
@@ -773,12 +869,12 @@ async def _start_phase1_paper_runner(
     persist_desired: bool = False,
 ) -> dict:
     if not PAPER_TRADING:
-        raise RuntimeError("Phase-1 paper runner requires PAPER_TRADING=true")
+        raise RuntimeError(f"{BROOKS_COMBO_LABEL} requires PAPER_TRADING=true")
     if strategy not in SUPPORTED_PHASE1_STRATEGIES:
-        raise ValueError(f"Unsupported phase-1 strategy: {strategy}")
+        raise ValueError(f"Unsupported {BROOKS_COMBO_LABEL} strategy: {strategy}")
     existing_runner = _phase1_runners.get(strategy)
     if existing_runner is not None and existing_runner.running:
-        raise RuntimeError(f"Phase-1 paper runner is already running for {strategy}")
+        raise RuntimeError(f"{BROOKS_COMBO_LABEL} is already running for {strategy}")
 
     runner = Phase1PaperRunner(
         Phase1PaperConfig(
@@ -815,7 +911,7 @@ async def stop_phase1_paper_runner(
 ) -> dict:
     if strategy is not None:
         if strategy not in SUPPORTED_PHASE1_STRATEGIES:
-            raise ValueError(f"Unsupported phase-1 strategy: {strategy}")
+            raise ValueError(f"Unsupported {BROOKS_COMBO_LABEL} strategy: {strategy}")
         runner = _phase1_runners.get(strategy)
         if runner is None:
             return _empty_runner_status(strategy)
@@ -829,7 +925,7 @@ async def stop_phase1_paper_runner(
     if not active_runners:
         return _empty_runner_status()
     if len(active_runners) > 1:
-        raise RuntimeError("Multiple phase-1 runners are active; specify a strategy to stop")
+        raise RuntimeError(f"Multiple {BROOKS_COMBO_LABEL} runners are active; specify a strategy to stop")
 
     runner = active_runners[0]
     status = await runner.stop(close_position=close_position)
@@ -840,6 +936,10 @@ async def stop_phase1_paper_runner(
 
 
 async def restore_desired_phase1_paper_runners() -> list[dict]:
+    if not _phase1_market_is_open():
+        await _stop_phase1_runners_for_closed_market()
+        return []
+
     configs = await _get_desired_phase1_runner_configs()
     restored: list[dict] = []
     for config in configs:
@@ -861,8 +961,30 @@ async def restore_desired_phase1_paper_runners() -> list[dict]:
                 )
             )
         except Exception:
-            logger.exception("Failed to restore phase-1 paper runner for %s", config.strategy)
+            logger.exception("Failed to restore %s for %s", BROOKS_COMBO_LABEL, config.strategy)
     return restored
+
+
+def _phase1_market_is_open() -> bool:
+    return _market_session_snapshot()["market_session"] == "open"
+
+
+async def _stop_phase1_runners_for_closed_market() -> None:
+    active_runners = [
+        runner for runner in list(_phase1_runners.values()) if runner.running
+    ]
+    for runner in active_runners:
+        try:
+            await runner.stop(close_position=True)
+        except Exception:
+            logger.exception(
+                "Failed to stop %s after market close: %s",
+                BROOKS_COMBO_LABEL,
+                runner.config.strategy,
+            )
+            continue
+        if not runner.running:
+            _phase1_runners.pop(runner.config.strategy, None)
 
 
 async def start_phase1_paper_runner_monitor(interval_seconds: int = 30) -> None:
@@ -880,7 +1002,7 @@ async def start_phase1_paper_runner_monitor(interval_seconds: int = 30) -> None:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Phase-1 paper runner monitor failed")
+                logger.exception("%s monitor failed", BROOKS_COMBO_LABEL)
             await asyncio.sleep(interval_seconds)
 
     _phase1_monitor_task = asyncio.create_task(_monitor())
@@ -1039,7 +1161,7 @@ async def get_phase1_paper_runner_history(
             target_strategy = active_runners[0].config.strategy
     target_strategy = target_strategy or DEFAULT_PHASE1_STRATEGY
     if target_strategy not in SUPPORTED_PHASE1_STRATEGIES:
-        raise ValueError(f"Unsupported phase-1 strategy: {target_strategy}")
+        raise ValueError(f"Unsupported {BROOKS_COMBO_LABEL} strategy: {target_strategy}")
 
     history = await get_trade_history(limit=max(limit * 5, limit))
     filtered = [

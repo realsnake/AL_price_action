@@ -110,6 +110,28 @@ export interface PaperStrategyPosition {
   reason: string;
   stop_reason: string;
   target_reason: string | null;
+  initial_risk: number;
+  max_favorable_price: number;
+}
+
+export interface PaperStrategyDynamicExit {
+  policy: string;
+  armed: boolean;
+  one_r_price: number;
+  bar_time: string;
+  ema20: number | null;
+  swing_low: number | null;
+  swing_low_time: string | null;
+  triggered: boolean;
+  trigger_reason: string | null;
+  trigger_price: number | null;
+}
+
+export interface PaperStrategyLastExit {
+  quantity: number;
+  exit_price: number;
+  exit_time: string;
+  reason: string;
 }
 
 export interface PaperStrategyPendingOrder {
@@ -177,6 +199,8 @@ export interface PaperStrategyStatus {
   last_trade_update_at: string | null;
   orders_submitted: number;
   position: PaperStrategyPosition | null;
+  dynamic_exit: PaperStrategyDynamicExit | null;
+  last_exit: PaperStrategyLastExit | null;
   pending_order: PaperStrategyPendingOrder | null;
   last_error: string | null;
   warnings: string[];

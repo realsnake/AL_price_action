@@ -28,6 +28,7 @@ import type {
 } from "./types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "1D"];
+const BROOKS_COMBO_LABEL = "QQQ 5m Brooks 组合";
 const MARKET_DAY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/New_York",
   year: "numeric",
@@ -225,7 +226,7 @@ export default function App() {
     ? `${activeRunnerPosition.unrealized_pnl >= 0 ? "+" : ""}$${activeRunnerPosition.unrealized_pnl.toFixed(2)} (${activeRunnerPosition.unrealized_pnl_pct.toFixed(2)}%)`
     : runnerStatusPosition
       ? `${runnerStatusPosition.quantity} shares open`
-    : "No open runner position";
+    : `No open ${BROOKS_COMBO_LABEL} position`;
   const runnerPnLClass = activeRunnerPosition
     ? activeRunnerPosition.unrealized_pnl >= 0
       ? "text-emerald-300"
@@ -237,7 +238,7 @@ export default function App() {
     ? `${activeRunnerPosition.qty} shares @ $${activeRunnerPosition.avg_entry.toFixed(2)}`
     : runnerStatusPosition
       ? `${spotlightRunner?.strategy ?? "runner"} @ $${runnerStatusPosition.entry_price.toFixed(2)} · stop $${runnerStatusPosition.stop_price.toFixed(2)}`
-      : "No active QQQ paper position yet";
+      : `No active ${BROOKS_COMBO_LABEL} position yet`;
   const openRunnerPositions = activeRunners.filter(
     (runnerStatus) => runnerStatus.position != null,
   );
@@ -371,15 +372,15 @@ export default function App() {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">
-                  Paper Runner Spotlight
+                  {BROOKS_COMBO_LABEL}
                 </p>
                 <h2 className="mt-2 text-base font-semibold text-white">
                   {spotlightRunner?.running
-                    ? `${activeRunners.length} phase-1 runners live on ${spotlightRunner.symbol}`
-                    : "Phase-1 paper runner is idle"}
+                    ? `${activeRunners.length} Brooks strategies live on ${spotlightRunner.symbol} 5m`
+                    : `${BROOKS_COMBO_LABEL} is idle`}
                 </h2>
                 <p className="mt-1 text-sm text-slate-300">
-                  {latestRunnerEvent?.message ?? "Waiting for the next 5 minute decision bar."}
+                  {latestRunnerEvent?.message ?? "Waiting for the next 5m Brooks decision bar."}
                 </p>
               </div>
               <span
@@ -410,7 +411,7 @@ export default function App() {
 
               <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
                 <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                  Combined Runner Position P&L
+                  Brooks Combo Position P&L
                 </p>
                 <p className={`mt-2 text-2xl font-semibold ${runnerPnLClass}`}>
                   {runnerPnLText}
@@ -427,7 +428,7 @@ export default function App() {
                 <p className="mt-2 text-base font-semibold text-white">
                   {activeRunners.reduce((sum, runnerStatus) => sum + runnerStatus.orders_submitted, 0)} orders submitted
                   {openRunnerPositions.length > 0
-                    ? ` · ${openRunnerPositions.length} open runner position`
+                    ? ` · ${openRunnerPositions.length} open Brooks position${openRunnerPositions.length > 1 ? "s" : ""}`
                     : ""}
                 </p>
                 <p className="mt-1 text-xs text-slate-400">
