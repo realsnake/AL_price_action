@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import CryptoHistoricalDataClient
@@ -12,6 +13,7 @@ from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING
+MARKET_TZ = ZoneInfo("America/New_York")
 
 
 def _timeframe_from_str(tf: str) -> TimeFrame:
@@ -138,7 +140,29 @@ class AlpacaClient:
             "bid_size": int(q.bid_size),
             "ask_size": int(q.ask_size),
             "timestamp": q.timestamp.isoformat(),
+            "previous_close": self._get_previous_close(symbol, q.timestamp),
         }
+
+    def _get_previous_close(self, symbol: str, asof: datetime) -> float | None:
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame(1, TimeFrameUnit.Day),
+            start=asof.astimezone(timezone.utc) - timedelta(days=10),
+            limit=10,
+            feed=DataFeed.IEX,
+        )
+        bars = self._get_data_client().get_stock_bars(request)
+        symbol_bars = list(bars[symbol])
+        current_market_day = asof.astimezone(MARKET_TZ).date()
+
+        previous_bars = [
+            bar
+            for bar in symbol_bars
+            if bar.timestamp.astimezone(MARKET_TZ).date() < current_market_day
+        ]
+        if not previous_bars:
+            return None
+        return float(previous_bars[-1].close)
 
     def get_account(self) -> dict:
         account = self._get_trading_client().get_account()

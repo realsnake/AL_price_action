@@ -7,6 +7,16 @@ export interface Bar {
   volume: number;
 }
 
+export interface MarketQuote {
+  symbol: string;
+  bid: number;
+  ask: number;
+  bid_size: number;
+  ask_size: number;
+  timestamp: string;
+  previous_close: number | null;
+}
+
 export interface Signal {
   symbol: string;
   signal_type: "buy" | "sell" | "hold";

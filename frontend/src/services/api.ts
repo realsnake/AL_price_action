@@ -12,6 +12,7 @@ import type {
   PaperStrategyStatus,
   TradeHistoryEntry,
   PaperStrategyReadiness,
+  MarketQuote,
 } from "../types";
 
 const api = axios.create({ baseURL: "/api" });
@@ -38,7 +39,7 @@ export async function getBars(
   return data.bars;
 }
 
-export async function getQuote(symbol: string) {
+export async function getQuote(symbol: string): Promise<MarketQuote> {
   const { data } = await api.get(`/market/quote/${symbol}`);
   return data;
 }

@@ -1,6 +1,6 @@
 import importlib
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -86,3 +86,78 @@ def test_alpaca_client_uses_crypto_historical_client_for_crypto_symbols(monkeypa
     ]
     assert client.request.symbol_or_symbols == "BTC/USD"
     assert client.request.limit is None
+
+
+def test_alpaca_client_quote_includes_previous_close(monkeypatch):
+    from services import alpaca_client as alpaca_client_module
+
+    class _FakeQuote:
+        bid_price = 661.5
+        ask_price = 661.7
+        bid_size = 12
+        ask_size = 14
+        timestamp = datetime(2026, 4, 27, 14, 30, tzinfo=timezone.utc)
+
+    class _FakeBar:
+        def __init__(self, close: float, timestamp: datetime):
+            self.close = close
+            self.timestamp = timestamp
+
+    class _FakeStockClient:
+        def __init__(self):
+            self.quote_request = None
+            self.bars_request = None
+
+        def get_stock_latest_quote(self, request):
+            self.quote_request = request
+            return {"QQQ": _FakeQuote()}
+
+        def get_stock_bars(self, request):
+            self.bars_request = request
+            return {
+                "QQQ": [
+                    _FakeBar(646.775, datetime(2026, 4, 20, 4, 0, tzinfo=timezone.utc)),
+                    _FakeBar(644.24, datetime(2026, 4, 21, 4, 0, tzinfo=timezone.utc)),
+                    _FakeBar(655.085, datetime(2026, 4, 22, 4, 0, tzinfo=timezone.utc)),
+                    _FakeBar(651.4, datetime(2026, 4, 23, 4, 0, tzinfo=timezone.utc)),
+                    _FakeBar(663.92, datetime(2026, 4, 24, 4, 0, tzinfo=timezone.utc)),
+                    _FakeBar(662.34, datetime(2026, 4, 27, 4, 0, tzinfo=timezone.utc)),
+                ]
+            }
+
+    client = _FakeStockClient()
+
+    monkeypatch.setattr(
+        alpaca_client_module.alpaca_client,
+        "_get_data_client",
+        lambda: client,
+    )
+    fixed_now = datetime(2026, 4, 27, 14, 35, tzinfo=timezone.utc)
+    quote_timestamp = datetime(2026, 4, 27, 14, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(alpaca_client_module, "datetime", _FixedDateTime(fixed_now))
+
+    quote = alpaca_client_module.alpaca_client.get_quote("QQQ")
+
+    assert quote == {
+        "symbol": "QQQ",
+        "bid": 661.5,
+        "ask": 661.7,
+        "bid_size": 12,
+        "ask_size": 14,
+        "timestamp": "2026-04-27T14:30:00+00:00",
+        "previous_close": 663.92,
+    }
+    assert client.quote_request.symbol_or_symbols == "QQQ"
+    assert client.bars_request.symbol_or_symbols == "QQQ"
+    assert client.bars_request.limit == 10
+    assert client.bars_request.start == (quote_timestamp - timedelta(days=10)).replace(tzinfo=None)
+
+
+class _FixedDateTime:
+    def __init__(self, fixed_now: datetime):
+        self._fixed_now = fixed_now
+
+    def now(self, tz=None):
+        if tz is None:
+            return self._fixed_now
+        return self._fixed_now.astimezone(tz)

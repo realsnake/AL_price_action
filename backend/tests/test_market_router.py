@@ -63,3 +63,21 @@ async def test_market_bars_route_uses_analysis_bars_service(monkeypatch):
         "limit": 300,
         "research_profile": "qqq_5m_phase1",
     }
+
+
+def test_market_quote_route_returns_quote_payload(monkeypatch):
+    expected_quote = {
+        "symbol": "QQQ",
+        "bid": 661.5,
+        "ask": 661.7,
+        "bid_size": 12,
+        "ask_size": 14,
+        "timestamp": "2026-04-27T14:30:00+00:00",
+        "previous_close": 659.25,
+    }
+
+    monkeypatch.setattr(market_router.alpaca_client, "get_quote", lambda symbol: expected_quote)
+
+    result = market_router.get_quote("QQQ")
+
+    assert result == expected_quote

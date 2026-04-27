@@ -15,6 +15,7 @@ import {
 import {
   getBars,
   getAccount,
+  getQuote,
   getPhase1PaperStrategyStatuses,
   getPositions,
 } from "./services/api";
@@ -25,6 +26,7 @@ import type {
   Position,
   Timeframe,
   PaperStrategyStatus,
+  MarketQuote,
 } from "./types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "1D"];
@@ -88,6 +90,7 @@ export default function App() {
   const [timeframe, setTimeframe] = useState<Timeframe>("5m");
   const [chartRequest, setChartRequest] = useState<ChartRequest | null>(null);
   const [bars, setBars] = useState<Bar[]>([]);
+  const [quote, setQuote] = useState<MarketQuote | null>(null);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
@@ -180,6 +183,33 @@ export default function App() {
   }, [fetchBars]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const fetchQuote = async () => {
+      try {
+        const next = await getQuote(symbol);
+        if (!cancelled) {
+          setQuote(next);
+        }
+      } catch {
+        if (!cancelled) {
+          setQuote(null);
+        }
+      }
+    };
+
+    void fetchQuote();
+    const id = window.setInterval(() => {
+      void fetchQuote();
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [symbol]);
+
+  useEffect(() => {
     fetchAccountData();
     const id = window.setInterval(() => {
       void fetchAccountData();
@@ -254,26 +284,34 @@ export default function App() {
         ? "text-emerald-300"
         : "text-rose-300";
   const latestBar = bars.length > 0 ? bars[bars.length - 1] : null;
-  const previousSessionClose =
+  const previousSessionCloseFromBars =
     latestBar != null ? getPreviousSessionClose(bars) : null;
+  const previousSessionClose = previousSessionCloseFromBars ?? quote?.previous_close ?? null;
+  const displayPrice =
+    quote != null
+      ? (quote.bid + quote.ask) / 2
+      : latestBar?.close ?? null;
   const priceDelta =
-    latestBar != null && previousSessionClose != null
-      ? latestBar.close - previousSessionClose
+    displayPrice != null && previousSessionClose != null
+      ? displayPrice - previousSessionClose
       : null;
   const priceDeltaPct =
     priceDelta != null && previousSessionClose != null && previousSessionClose !== 0
       ? (priceDelta / previousSessionClose) * 100
       : null;
   const priceToneClass =
-    latestBar == null
+    displayPrice == null
       ? "text-slate-300"
       : priceDelta == null
-        ? latestBar.close >= latestBar.open
-          ? "text-green-400"
-          : "text-red-400"
+        ? latestBar != null
+          ? latestBar.close >= latestBar.open
+            ? "text-green-400"
+            : "text-red-400"
+          : "text-slate-300"
         : priceDelta >= 0
           ? "text-green-400"
-          : "text-red-400";
+          : "text-red-400"
+      ;
   const spotlightTone = spotlightRunner?.running
     ? hasRunnerPosition
       ? activeRunnerPosition == null || activeRunnerPosition.unrealized_pnl >= 0
@@ -440,10 +478,10 @@ export default function App() {
 
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold text-white">{symbol}</h2>
-            {latestBar != null && (
+            {displayPrice != null && (
               <>
                 <span className={`text-lg font-mono ${priceToneClass}`}>
-                  ${latestBar.close.toFixed(2)}
+                  ${displayPrice.toFixed(2)}
                 </span>
                 {priceDelta != null && priceDeltaPct != null && (
                   <span className={`text-sm font-mono ${priceToneClass}`}>
