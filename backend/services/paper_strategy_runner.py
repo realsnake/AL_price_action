@@ -888,7 +888,11 @@ async def _start_phase1_paper_runner(
         )
     )
     _phase1_runners[strategy] = runner
-    status = await runner.start()
+    try:
+        status = await runner.start()
+    except Exception:
+        _phase1_runners.pop(strategy, None)
+        raise
     if persist_desired:
         await _set_desired_phase1_runner(
             Phase1PaperConfig(
@@ -945,6 +949,13 @@ async def restore_desired_phase1_paper_runners() -> list[dict]:
     for config in configs:
         existing_runner = _phase1_runners.get(config.strategy)
         if existing_runner is not None and existing_runner.running:
+            if await _restart_stale_phase1_runner(existing_runner):
+                existing_runner = None
+            else:
+                restored.append(existing_runner.status())
+                continue
+
+        if existing_runner is not None and existing_runner.running:
             restored.append(existing_runner.status())
             continue
         try:
@@ -963,6 +974,21 @@ async def restore_desired_phase1_paper_runners() -> list[dict]:
         except Exception:
             logger.exception("Failed to restore %s for %s", BROOKS_COMBO_LABEL, config.strategy)
     return restored
+
+
+async def _restart_stale_phase1_runner(runner: Phase1PaperRunner) -> bool:
+    if not _phase1_runner_is_stale(runner):
+        return False
+
+    logger.warning(
+        "Restarting stale %s runner for %s after prolonged live-bar gap",
+        BROOKS_COMBO_LABEL,
+        runner.config.strategy,
+    )
+    await runner.stop(close_position=False)
+    if not runner.running:
+        _phase1_runners.pop(runner.config.strategy, None)
+    return True
 
 
 def _phase1_market_is_open() -> bool:
@@ -1066,6 +1092,15 @@ def _runner_live_bar_age_seconds(runner: Phase1PaperRunner, now: datetime) -> in
     if live_dt is None:
         return 999999
     return max(0, int((now - live_dt).total_seconds()))
+
+
+def _phase1_runner_is_stale(runner: Phase1PaperRunner, now: datetime | None = None) -> bool:
+    if not runner.running:
+        return False
+    current = now or _now_utc()
+    if not is_rth_bar_timestamp(current.isoformat()):
+        return False
+    return _runner_live_bar_age_seconds(runner, current) >= 360
 
 
 def get_phase1_paper_runner_status(

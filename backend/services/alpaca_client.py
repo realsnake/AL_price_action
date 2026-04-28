@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
@@ -14,6 +15,7 @@ from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING
 MARKET_TZ = ZoneInfo("America/New_York")
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 8.0
 
 
 def _timeframe_from_str(tf: str) -> TimeFrame:
@@ -47,26 +49,49 @@ class AlpacaClient:
     def _get_data_client(self) -> StockHistoricalDataClient:
         self._ensure_configured()
         if self._data_client is None:
-            self._data_client = StockHistoricalDataClient(
+            self._data_client = self._configure_rest_client(
+                StockHistoricalDataClient(
                 ALPACA_API_KEY, ALPACA_SECRET_KEY
+                )
             )
         return self._data_client
 
     def _get_crypto_data_client(self) -> CryptoHistoricalDataClient:
         self._ensure_configured()
         if self._crypto_data_client is None:
-            self._crypto_data_client = CryptoHistoricalDataClient(
+            self._crypto_data_client = self._configure_rest_client(
+                CryptoHistoricalDataClient(
                 ALPACA_API_KEY, ALPACA_SECRET_KEY
+                )
             )
         return self._crypto_data_client
 
     def _get_trading_client(self) -> TradingClient:
         self._ensure_configured()
         if self._trading_client is None:
-            self._trading_client = TradingClient(
-                ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING
+            self._trading_client = self._configure_rest_client(
+                TradingClient(
+                    ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING
+                )
             )
         return self._trading_client
+
+    def _configure_rest_client(self, client):
+        session = getattr(client, "_session", None)
+        request = getattr(session, "request", None)
+        if session is None or request is None:
+            return client
+        if getattr(session, "_codex_timeout_wrapped", False):
+            return client
+
+        @wraps(request)
+        def request_with_timeout(method, url, **kwargs):
+            kwargs.setdefault("timeout", DEFAULT_REQUEST_TIMEOUT_SECONDS)
+            return request(method, url, **kwargs)
+
+        session.request = request_with_timeout
+        session._codex_timeout_wrapped = True
+        return client
 
     def is_crypto_symbol(self, symbol: str) -> bool:
         return "/" in symbol.upper()

@@ -153,6 +153,63 @@ def test_alpaca_client_quote_includes_previous_close(monkeypatch):
     assert client.bars_request.start == (quote_timestamp - timedelta(days=10)).replace(tzinfo=None)
 
 
+def test_alpaca_client_wraps_rest_session_with_default_timeout():
+    from services import alpaca_client as alpaca_client_module
+
+    calls = []
+
+    class _FakeSession:
+        def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return {"ok": True}
+
+    class _FakeRestClient:
+        def __init__(self):
+            self._session = _FakeSession()
+
+    client = _FakeRestClient()
+
+    alpaca_client_module.alpaca_client._configure_rest_client(client)
+    result = client._session.request("GET", "https://example.test/v2/foo")
+
+    assert result == {"ok": True}
+    assert calls == [
+        (
+            "GET",
+            "https://example.test/v2/foo",
+            {"timeout": alpaca_client_module.DEFAULT_REQUEST_TIMEOUT_SECONDS},
+        )
+    ]
+
+
+def test_alpaca_client_preserves_explicit_rest_timeout():
+    from services import alpaca_client as alpaca_client_module
+
+    calls = []
+
+    class _FakeSession:
+        def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return {"ok": True}
+
+    class _FakeRestClient:
+        def __init__(self):
+            self._session = _FakeSession()
+
+    client = _FakeRestClient()
+
+    alpaca_client_module.alpaca_client._configure_rest_client(client)
+    client._session.request("GET", "https://example.test/v2/foo", timeout=2.5)
+
+    assert calls == [
+        (
+            "GET",
+            "https://example.test/v2/foo",
+            {"timeout": 2.5},
+        )
+    ]
+
+
 class _FixedDateTime:
     def __init__(self, fixed_now: datetime):
         self._fixed_now = fixed_now

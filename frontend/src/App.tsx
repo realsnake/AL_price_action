@@ -241,9 +241,16 @@ export default function App() {
   };
 
   const activeRunners = paperRunnerStatuses.filter((runnerStatus) => runnerStatus.running);
+  const healthyActiveRunners = activeRunners.filter(
+    (runnerStatus) =>
+      !runnerStatus.warnings.some((warning) =>
+        warning.includes("No live 1m bars observed"),
+      ),
+  );
   const spotlightRunner =
-    activeRunners.find((runnerStatus) => runnerStatus.position != null)
-    ?? activeRunners[0]
+    healthyActiveRunners.find((runnerStatus) => runnerStatus.position != null)
+    ?? healthyActiveRunners[0]
+    ?? activeRunners.find((runnerStatus) => runnerStatus.position != null)
     ?? paperRunnerStatuses[0]
     ?? null;
   const activeRunnerPosition = spotlightRunner?.symbol
@@ -275,8 +282,10 @@ export default function App() {
   const executionPulseMessage = spotlightRunner?.pending_order
     ? `${spotlightRunner.pending_order.side.toUpperCase()} ${spotlightRunner.pending_order.quantity} pending`
     : spotlightRunner?.last_live_bar_at
-      ? `Last live bar ${formatBeijingTime(spotlightRunner.last_live_bar_at)} · ${activeRunners.map((runnerStatus) => runnerStatus.strategy).join(" + ")}`
-      : "Live bar feed still warming up";
+      ? `Last live bar ${formatBeijingTime(spotlightRunner.last_live_bar_at)} · ${healthyActiveRunners.map((runnerStatus) => runnerStatus.strategy).join(" + ")}`
+      : activeRunners.length > 0
+        ? "Runners are started, but live bar feed is degraded"
+        : "Live bar feed still warming up";
   const dayPnLClass =
     account == null
       ? "text-slate-300"

@@ -1436,3 +1436,107 @@ async def test_restore_desired_phase1_runners_stops_active_runners_after_close(m
     assert stop_calls == [True]
     assert inactive_calls == []
     assert "brooks_small_pb_trend" not in paper_strategy_runner._phase1_runners
+
+
+@pytest.mark.asyncio
+async def test_restore_desired_phase1_runners_restarts_stale_open_market_runner(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+    stop_calls = []
+    start_calls = []
+
+    class FakeRunner:
+        def __init__(self):
+            self.running = True
+            self.config = paper_strategy_runner.Phase1PaperConfig(
+                strategy="brooks_small_pb_trend",
+                fixed_quantity=25,
+            )
+            self.started_at = "2025-01-06T14:30:00+00:00"
+            self.last_live_bar_at = "2025-01-06T14:31:00+00:00"
+
+        async def stop(self, close_position: bool = True):
+            stop_calls.append(close_position)
+            self.running = False
+            return {"running": False}
+
+        def status(self):
+            return {
+                "running": self.running,
+                "strategy": self.config.strategy,
+                "warnings": ["No live 1m bars observed for 600s during RTH"],
+            }
+
+    async def fake_configs():
+        return [
+            paper_strategy_runner.Phase1PaperConfig(
+                strategy="brooks_small_pb_trend",
+                fixed_quantity=25,
+            )
+        ]
+
+    async def fake_start(**kwargs):
+        start_calls.append(kwargs)
+        return {"running": True, "strategy": kwargs["strategy"]}
+
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_market_session_snapshot",
+        lambda: {
+            "market_session": "open",
+            "current_session_open": "2025-01-06T14:30:00+00:00",
+            "current_session_close": "2025-01-06T21:00:00+00:00",
+            "next_session_open": "2025-01-07T14:30:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_now_utc",
+        lambda: datetime.fromisoformat("2025-01-06T14:41:00+00:00"),
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_get_desired_phase1_runner_configs",
+        fake_configs,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_start_phase1_paper_runner",
+        fake_start,
+    )
+
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"] = FakeRunner()
+
+    restored = await paper_strategy_runner.restore_desired_phase1_paper_runners()
+
+    assert stop_calls == [False]
+    assert start_calls == [
+        {
+            "strategy": "brooks_small_pb_trend",
+            "fixed_quantity": 25,
+            "stop_loss_pct": 2.0,
+            "take_profit_pct": 4.0,
+            "exit_policy": None,
+            "history_days": 10,
+            "params": None,
+            "persist_desired": False,
+        }
+    ]
+    assert restored == [{"running": True, "strategy": "brooks_small_pb_trend"}]
+
+
+@pytest.mark.asyncio
+async def test_start_phase1_paper_runner_removes_runner_when_start_fails(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    async def fake_start(self):
+        raise RuntimeError("bars fetch timed out")
+
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
+    monkeypatch.setattr(paper_strategy_runner.Phase1PaperRunner, "start", fake_start)
+
+    with pytest.raises(RuntimeError, match="bars fetch timed out"):
+        await paper_strategy_runner.start_phase1_paper_runner(
+            strategy="brooks_small_pb_trend",
+        )
+
+    assert "brooks_small_pb_trend" not in paper_strategy_runner._phase1_runners
