@@ -1,5 +1,12 @@
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 
+function parseTimestamp(value: string): Date {
+  // Backend timestamps are often emitted as naive UTC strings.
+  // Add an explicit UTC suffix so the browser doesn't treat them as local time.
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`;
+  return new Date(normalized);
+}
+
 const beijingDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: BEIJING_TIME_ZONE,
   year: "numeric",
@@ -27,13 +34,13 @@ const beijingTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 export function formatBeijingDate(value: string): string {
-  return beijingDateFormatter.format(new Date(value));
+  return beijingDateFormatter.format(parseTimestamp(value));
 }
 
 export function formatBeijingDateTime(value: string | null | undefined): string {
-  return value ? `${beijingDateTimeFormatter.format(new Date(value))} BJT` : "n/a";
+  return value ? `${beijingDateTimeFormatter.format(parseTimestamp(value))} BJT` : "n/a";
 }
 
 export function formatBeijingTime(value: string | null | undefined): string {
-  return value ? `${beijingTimeFormatter.format(new Date(value))} BJT` : "n/a";
+  return value ? `${beijingTimeFormatter.format(parseTimestamp(value))} BJT` : "n/a";
 }
