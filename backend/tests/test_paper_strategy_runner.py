@@ -1525,6 +1525,147 @@ async def test_restore_desired_phase1_runners_restarts_stale_open_market_runner(
 
 
 @pytest.mark.asyncio
+async def test_restore_desired_phase1_runners_refreshes_pending_orders_before_restart(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+    refresh_calls = []
+    stop_calls = []
+    start_calls = []
+
+    class FakeRunner:
+        def __init__(self):
+            self.running = True
+            self.config = paper_strategy_runner.Phase1PaperConfig(
+                strategy="brooks_small_pb_trend",
+                fixed_quantity=25,
+            )
+            self.started_at = "2025-01-06T14:30:00+00:00"
+            self.last_live_bar_at = "2025-01-06T14:31:00+00:00"
+            self.pending_order = paper_strategy_runner.PendingOrder(
+                alpaca_order_id="ord-1",
+                side="buy",
+                quantity=25,
+                status="new",
+                reason="entry",
+                submitted_at="2025-01-06T14:31:00+00:00",
+                signal_time="2025-01-06T14:30:00+00:00",
+            )
+
+        async def _refresh_pending_order(self):
+            refresh_calls.append(self.pending_order.alpaca_order_id)
+            self.pending_order = None
+            self.position = paper_strategy_runner.LivePosition(
+                quantity=25,
+                entry_price=501.0,
+                stop_price=500.0,
+                target_price=None,
+                entry_time="2025-01-06T14:32:00+00:00",
+                signal_time="2025-01-06T14:30:00+00:00",
+                reason="entry",
+                stop_reason="test_stop",
+                target_reason=None,
+                initial_risk=1.0,
+                max_favorable_price=501.0,
+            )
+
+        async def stop(self, close_position: bool = True):
+            stop_calls.append(close_position)
+            self.running = False
+            return {"running": False}
+
+        def status(self):
+            return {
+                "running": self.running,
+                "strategy": self.config.strategy,
+                "position": None if getattr(self, "position", None) is None else {"quantity": 25},
+                "pending_order": None,
+            }
+
+    async def fake_configs():
+        return [
+            paper_strategy_runner.Phase1PaperConfig(
+                strategy="brooks_small_pb_trend",
+                fixed_quantity=25,
+            )
+        ]
+
+    async def fake_start(**kwargs):
+        start_calls.append(kwargs)
+        return {"running": True, "strategy": kwargs["strategy"]}
+
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_market_session_snapshot",
+        lambda: {
+            "market_session": "open",
+            "current_session_open": "2025-01-06T14:30:00+00:00",
+            "current_session_close": "2025-01-06T21:00:00+00:00",
+            "next_session_open": "2025-01-07T14:30:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_now_utc",
+        lambda: datetime.fromisoformat("2025-01-06T14:41:00+00:00"),
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_get_desired_phase1_runner_configs",
+        fake_configs,
+    )
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_start_phase1_paper_runner",
+        fake_start,
+    )
+
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"] = FakeRunner()
+
+    restored = await paper_strategy_runner.restore_desired_phase1_paper_runners()
+
+    assert refresh_calls == ["ord-1"]
+    assert stop_calls == []
+    assert start_calls == []
+    assert restored == [
+        {
+            "running": True,
+            "strategy": "brooks_small_pb_trend",
+            "position": {"quantity": 25},
+            "pending_order": None,
+        }
+    ]
+
+
+def test_get_phase1_paper_runner_readiness_is_not_ready_when_active_runner_stale(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    class FakeRunner:
+        running = True
+        started_at = "2026-04-20T13:30:00+00:00"
+        last_live_bar_at = "2026-04-20T13:31:00+00:00"
+        config = paper_strategy_runner.Phase1PaperConfig(strategy="brooks_small_pb_trend")
+
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"] = FakeRunner()
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_now_utc",
+        lambda: datetime.fromisoformat("2026-04-20T14:00:00+00:00"),
+    )
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "is_configured", lambda: True)
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_account", lambda: {"equity": 100000.0})
+    monkeypatch.setattr(paper_strategy_runner.market_data, "is_stream_running", lambda: True)
+    monkeypatch.setattr(paper_strategy_runner.trade_updates, "is_trade_updates_running", lambda: True)
+
+    readiness = paper_strategy_runner.get_phase1_paper_runner_readiness()
+
+    assert readiness["ready"] is False
+    assert readiness["runner_running"] is True
+    assert "Active runner brooks_small_pb_trend has stale live bars" in readiness["warnings"]
+
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+
+@pytest.mark.asyncio
 async def test_start_phase1_paper_runner_removes_runner_when_start_fails(monkeypatch):
     paper_strategy_runner.reset_phase1_paper_runner()
 

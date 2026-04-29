@@ -1807,10 +1807,10 @@ class BreakoutPullbackStrategy(BaseStrategy):
             "ema_period": 20,
             "quantity": 1,
             "min_breakout_body_ratio": 0.55,
-            "max_pullback_depth_ratio": 0.75,
+            "max_pullback_depth_ratio": 0.65,
             "require_above_session_open": True,
             "require_above_session_vwap": True,
-            "session_vwap_buffer_bps": 5.0,
+            "session_vwap_buffer_bps": 0.0,
         }
 
     def generate_signals(self, symbol: str, bars: list[dict]) -> list[Signal]:
@@ -1818,10 +1818,10 @@ class BreakoutPullbackStrategy(BaseStrategy):
         ema_p = self.params.get("ema_period", 20)
         qty = self.params.get("quantity", 1)
         min_breakout_body_ratio = self.params.get("min_breakout_body_ratio", 0.55)
-        max_pullback_depth_ratio = self.params.get("max_pullback_depth_ratio", 0.75)
+        max_pullback_depth_ratio = self.params.get("max_pullback_depth_ratio", 0.65)
         require_above_session_open = self.params.get("require_above_session_open", True)
         require_above_session_vwap = self.params.get("require_above_session_vwap", True)
-        session_vwap_buffer_bps = self.params.get("session_vwap_buffer_bps", 5.0)
+        session_vwap_buffer_bps = self.params.get("session_vwap_buffer_bps", 0.0)
         if len(bars) < max(lb, ema_p) + 5:
             return []
 

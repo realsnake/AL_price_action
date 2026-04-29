@@ -334,13 +334,26 @@ def policy_label(policy: str) -> str:
     mapping = {
         "breakout_session_close": "收盘平仓",
         "breakout_target_1r": "固定 1R 止盈",
+        "breakout_target_1_25r": "固定 1.25R 止盈",
         "breakout_target_1_5r": "固定 1.5R 止盈",
+        "breakout_target_1_75r": "固定 1.75R 止盈",
         "breakout_target_2r": "固定 2R 止盈",
+        "breakout_target_2_25r": "固定 2.25R 止盈",
+        "breakout_target_2_5r": "固定 2.5R 止盈",
+        "breakout_target_2_75r": "固定 2.75R 止盈",
+        "breakout_target_3r": "固定 3R 止盈",
         "breakout_target_2_5r_break_even_after_0_75r": "0.75R 后保本 + 固定 2.5R 止盈",
         "breakout_measured_move": "breakout bar measured move 止盈",
+        "breakout_break_even_after_0_5r": "0.5R 后提到保本",
+        "breakout_break_even_after_0_75r": "0.75R 后提到保本",
         "breakout_break_even_after_1r": "1R 后提到保本",
+        "breakout_break_even_after_1_25r": "1.25R 后提到保本",
+        "breakout_pullback_low_after_0_75r": "0.75R 后提到 pullback low",
         "breakout_pullback_low_after_1r": "1R 后提到 pullback low",
+        "breakout_pullback_low_after_1_25r": "1.25R 后提到 pullback low",
+        "breakout_swing_ema_after_0_75r": "0.75R 后 swing low / EMA20 动态离场",
         "breakout_swing_ema_after_1r": "1R 后 swing low / EMA20 动态离场",
+        "breakout_swing_ema_after_1_25r": "1.25R 后 swing low / EMA20 动态离场",
         "pullback_count_session_close": "收盘平仓",
         "pullback_count_target_1r": "固定 1R 止盈",
         "pullback_count_target_1_5r": "固定 1.5R 止盈",
@@ -350,7 +363,32 @@ def policy_label(policy: str) -> str:
         "pullback_count_pullback_low_after_1r": "1R 后提到 H2 pullback low",
         "pullback_count_swing_ema_after_1r": "1R 后 swing low / EMA20 动态离场",
     }
+    dynamic_label = _dynamic_breakout_policy_label(policy)
+    if dynamic_label is not None:
+        return dynamic_label
     return mapping.get(policy, policy)
+
+
+def _dynamic_breakout_policy_label(policy: str) -> str | None:
+    target_be_prefix = "breakout_target_"
+    target_be_marker = "r_break_even_after_"
+    if (
+        policy.startswith(target_be_prefix)
+        and target_be_marker in policy
+        and policy.endswith("r")
+    ):
+        body = policy[len(target_be_prefix):]
+        target_token, trigger_token = body.split(target_be_marker, 1)
+        trigger_token = trigger_token[:-1]
+        return (
+            f"{_format_r_label(trigger_token)}R 后保本 + "
+            f"固定 {_format_r_label(target_token)}R 止盈"
+        )
+    return None
+
+
+def _format_r_label(token: str) -> str:
+    return token.replace("_", ".")
 
 
 def _build_html_report(*, ranked_rows: list[dict], output_dir: Path) -> str:
@@ -471,7 +509,7 @@ def _build_html_report(*, ranked_rows: list[dict], output_dir: Path) -> str:
           <tr>
             <th>排名</th>
             <th>方案</th>
-            <th>策略 ID</th>
+            <th>方案 ID</th>
             <th>近期门槛</th>
             <th>信号</th>
             <th>交易</th>

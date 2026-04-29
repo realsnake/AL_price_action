@@ -791,6 +791,17 @@ def _build_period(bars: list[dict]) -> str:
 
 
 def _describe_stop_reason(reason: str | None, stop_loss_pct: float) -> str:
+    breakout_be = _match_breakout_break_even_reason(reason)
+    if breakout_be is not None:
+        return f"达到 {breakout_be}R 后止损抬到保本位"
+    breakout_target_be = _match_breakout_target_break_even_reason(reason)
+    if breakout_target_be is not None:
+        _target_r, trigger_r = breakout_target_be
+        return f"达到 {trigger_r}R 后止损抬到保本位"
+    breakout_pullback_low = _match_breakout_pullback_low_reason(reason)
+    if breakout_pullback_low is not None:
+        return f"达到 {breakout_pullback_low}R 后止损抬到 pullback low"
+
     mapping = {
         "fixed_pct_stop_loss": f"固定 {stop_loss_pct:.1f}% 止损",
         "phase1_structural_below_signal_pullback_low": "跌破信号回调低点",
@@ -809,6 +820,14 @@ def _describe_stop_reason(reason: str | None, stop_loss_pct: float) -> str:
 def _describe_target_reason(reason: str | None, take_profit_pct: float) -> str:
     if reason is None:
         return f"这个 {BROOKS_COMBO_LABEL}里没有固定止盈"
+    breakout_target_be = _match_breakout_target_break_even_reason(reason)
+    if breakout_target_be is not None:
+        target_r, _trigger_r = breakout_target_be
+        return f"固定 {target_r}R 止盈"
+    breakout_target = _match_breakout_target_reason(reason)
+    if breakout_target is not None:
+        return f"固定 {breakout_target}R 止盈"
+
     mapping = {
         "fixed_pct_take_profit": f"固定 {take_profit_pct:.1f}% 止盈",
         "breakout_target_1r": "固定 1R 止盈",
@@ -822,6 +841,49 @@ def _describe_target_reason(reason: str | None, take_profit_pct: float) -> str:
         "pullback_count_target_2r_break_even_after_0_75r": "固定 2R 止盈",
     }
     return mapping.get(reason, reason)
+
+
+def _match_breakout_target_break_even_reason(reason: str | None) -> tuple[str, str] | None:
+    if reason is None:
+        return None
+    match = re.fullmatch(
+        r"breakout_target_([0-9_]+)r_break_even_after_([0-9_]+)r",
+        reason,
+    )
+    if not match:
+        return None
+    return _format_r_label(match.group(1)), _format_r_label(match.group(2))
+
+
+def _match_breakout_target_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    match = re.fullmatch(r"breakout_target_([0-9_]+)r", reason)
+    if not match:
+        return None
+    return _format_r_label(match.group(1))
+
+
+def _match_breakout_break_even_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    match = re.fullmatch(r"breakout_break_even_after_([0-9_]+)r", reason)
+    if not match:
+        return None
+    return _format_r_label(match.group(1))
+
+
+def _match_breakout_pullback_low_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    match = re.fullmatch(r"breakout_pullback_low_after_([0-9_]+)r", reason)
+    if not match:
+        return None
+    return _format_r_label(match.group(1))
+
+
+def _format_r_label(value: str) -> str:
+    return value.replace("_", ".")
 
 
 def _describe_exit_reason(reason: str) -> str:

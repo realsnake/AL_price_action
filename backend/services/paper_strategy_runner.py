@@ -949,6 +949,10 @@ async def restore_desired_phase1_paper_runners() -> list[dict]:
     for config in configs:
         existing_runner = _phase1_runners.get(config.strategy)
         if existing_runner is not None and existing_runner.running:
+            pending_refreshed = await _refresh_pending_order_for_runner(existing_runner)
+            if pending_refreshed:
+                restored.append(existing_runner.status())
+                continue
             if await _restart_stale_phase1_runner(existing_runner):
                 existing_runner = None
             else:
@@ -989,6 +993,31 @@ async def _restart_stale_phase1_runner(runner: Phase1PaperRunner) -> bool:
     if not runner.running:
         _phase1_runners.pop(runner.config.strategy, None)
     return True
+
+
+async def _refresh_pending_order_for_runner(runner: Phase1PaperRunner) -> bool:
+    if getattr(runner, "pending_order", None) is None:
+        return False
+
+    async def _refresh() -> bool:
+        if getattr(runner, "pending_order", None) is None:
+            return False
+        try:
+            await runner._refresh_pending_order()
+        except Exception:
+            logger.exception(
+                "Failed to refresh pending %s order for %s",
+                BROOKS_COMBO_LABEL,
+                runner.config.strategy,
+            )
+            return False
+        return True
+
+    lock = getattr(runner, "lock", None)
+    if lock is None:
+        return await _refresh()
+    async with lock:
+        return await _refresh()
 
 
 def _phase1_market_is_open() -> bool:
@@ -1050,6 +1079,9 @@ async def _poll_stale_phase1_runner_bars() -> None:
     active_runners = [runner for runner in _phase1_runners.values() if runner.running]
     if not active_runners:
         return
+
+    for runner in active_runners:
+        await _refresh_pending_order_for_runner(runner)
 
     now = _now_utc()
     if not is_rth_bar_timestamp(now.isoformat()):
@@ -1146,6 +1178,12 @@ def get_phase1_paper_runner_readiness() -> dict:
 
     market_stream_running = market_data.is_stream_running()
     trade_updates_running = trade_updates.is_trade_updates_running()
+    active_runners = [runner for runner in _phase1_runners.values() if runner.running]
+    stale_active_strategies = [
+        runner.config.strategy
+        for runner in active_runners
+        if _phase1_runner_is_stale(runner)
+    ]
 
     warnings: list[str] = []
     if not PAPER_TRADING:
@@ -1158,24 +1196,26 @@ def get_phase1_paper_runner_readiness() -> dict:
         warnings.append("Market data stream is not running")
     if alpaca_configured and not trade_updates_running:
         warnings.append("Trade updates stream is not running")
+    for strategy in stale_active_strategies:
+        warnings.append(f"Active runner {strategy} has stale live bars")
 
     return {
         "ready": PAPER_TRADING
         and alpaca_configured
         and account_status == "ok"
         and market_stream_running
-        and trade_updates_running,
+        and trade_updates_running
+        and not stale_active_strategies,
         "paper_trading": PAPER_TRADING,
         "alpaca_configured": alpaca_configured,
         "account_status": account_status,
         "account_error": account_error,
         "market_stream_running": market_stream_running,
         "trade_updates_running": trade_updates_running,
-        "runner_running": any(runner.running for runner in _phase1_runners.values()),
+        "runner_running": bool(active_runners),
         "active_strategies": sorted(
             runner.config.strategy
-            for runner in _phase1_runners.values()
-            if runner.running
+            for runner in active_runners
         ),
         "market_session": session["market_session"],
         "current_session_open": session["current_session_open"],

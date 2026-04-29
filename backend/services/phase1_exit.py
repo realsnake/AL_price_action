@@ -3,26 +3,97 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def _format_r_multiple(value: float) -> str:
+    text = f"{value:.2f}".rstrip("0").rstrip(".")
+    return text.replace(".", "_")
+
+
+def _parse_r_multiple_token(token: str) -> float | None:
+    try:
+        return float(token.replace("_", "."))
+    except ValueError:
+        return None
+
+
+def _breakout_target_policy(r_multiple: float) -> str:
+    return f"breakout_target_{_format_r_multiple(r_multiple)}r"
+
+
+def _breakout_target_break_even_policy(
+    target_r: float,
+    break_even_trigger_r: float,
+) -> str:
+    return (
+        f"breakout_target_{_format_r_multiple(target_r)}r"
+        f"_break_even_after_{_format_r_multiple(break_even_trigger_r)}r"
+    )
+
+
+def _breakout_break_even_policy(trigger_r: float) -> str:
+    return f"breakout_break_even_after_{_format_r_multiple(trigger_r)}r"
+
+
+def _breakout_pullback_low_policy(trigger_r: float) -> str:
+    return f"breakout_pullback_low_after_{_format_r_multiple(trigger_r)}r"
+
+
+def _breakout_swing_ema_policy(trigger_r: float) -> str:
+    return f"breakout_swing_ema_after_{_format_r_multiple(trigger_r)}r"
+
+
+BREAKOUT_TARGET_R_MULTIPLES = (1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
+BREAKOUT_BREAK_EVEN_TRIGGER_R_MULTIPLES = (0.5, 0.75, 1.0, 1.25)
+BREAKOUT_TRAILING_TRIGGER_R_MULTIPLES = (0.75, 1.0, 1.25)
+
+
 BREAKOUT_EXIT_POLICY_SESSION_CLOSE = "breakout_session_close"
-BREAKOUT_EXIT_POLICY_TARGET_1R = "breakout_target_1r"
-BREAKOUT_EXIT_POLICY_TARGET_1_5R = "breakout_target_1_5r"
-BREAKOUT_EXIT_POLICY_TARGET_2R = "breakout_target_2r"
-BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R = "breakout_target_2_5r_break_even_after_0_75r"
+BREAKOUT_EXIT_POLICY_TARGET_1R = _breakout_target_policy(1.0)
+BREAKOUT_EXIT_POLICY_TARGET_1_25R = _breakout_target_policy(1.25)
+BREAKOUT_EXIT_POLICY_TARGET_1_5R = _breakout_target_policy(1.5)
+BREAKOUT_EXIT_POLICY_TARGET_1_75R = _breakout_target_policy(1.75)
+BREAKOUT_EXIT_POLICY_TARGET_2R = _breakout_target_policy(2.0)
+BREAKOUT_EXIT_POLICY_TARGET_2_25R = _breakout_target_policy(2.25)
+BREAKOUT_EXIT_POLICY_TARGET_2_5R = _breakout_target_policy(2.5)
+BREAKOUT_EXIT_POLICY_TARGET_2_75R = _breakout_target_policy(2.75)
+BREAKOUT_EXIT_POLICY_TARGET_3R = _breakout_target_policy(3.0)
+BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R = (
+    _breakout_target_break_even_policy(2.5, 0.75)
+)
 BREAKOUT_EXIT_POLICY_MEASURED_MOVE = "breakout_measured_move"
-BREAKOUT_EXIT_POLICY_BREAK_EVEN_AFTER_1R = "breakout_break_even_after_1r"
-BREAKOUT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R = "breakout_pullback_low_after_1r"
-BREAKOUT_EXIT_POLICY_SWING_EMA_AFTER_1R = "breakout_swing_ema_after_1r"
+BREAKOUT_EXIT_POLICY_BREAK_EVEN_AFTER_1R = _breakout_break_even_policy(1.0)
+BREAKOUT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R = _breakout_pullback_low_policy(1.0)
+BREAKOUT_EXIT_POLICY_SWING_EMA_AFTER_1R = _breakout_swing_ema_policy(1.0)
+
+BREAKOUT_FIXED_TARGET_POLICIES = tuple(
+    _breakout_target_policy(value)
+    for value in BREAKOUT_TARGET_R_MULTIPLES
+)
+BREAKOUT_TARGET_BREAK_EVEN_POLICIES = tuple(
+    _breakout_target_break_even_policy(target_r, trigger_r)
+    for target_r in (2.0, 2.5, 3.0)
+    for trigger_r in BREAKOUT_BREAK_EVEN_TRIGGER_R_MULTIPLES
+)
+BREAKOUT_BREAK_EVEN_POLICIES = tuple(
+    _breakout_break_even_policy(value)
+    for value in BREAKOUT_BREAK_EVEN_TRIGGER_R_MULTIPLES
+)
+BREAKOUT_PULLBACK_LOW_POLICIES = tuple(
+    _breakout_pullback_low_policy(value)
+    for value in BREAKOUT_TRAILING_TRIGGER_R_MULTIPLES
+)
+BREAKOUT_SWING_EMA_POLICIES = tuple(
+    _breakout_swing_ema_policy(value)
+    for value in BREAKOUT_TRAILING_TRIGGER_R_MULTIPLES
+)
 
 BREAKOUT_EXIT_POLICIES = (
     BREAKOUT_EXIT_POLICY_SESSION_CLOSE,
-    BREAKOUT_EXIT_POLICY_TARGET_1R,
-    BREAKOUT_EXIT_POLICY_TARGET_1_5R,
-    BREAKOUT_EXIT_POLICY_TARGET_2R,
-    BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R,
+    *BREAKOUT_FIXED_TARGET_POLICIES,
+    *BREAKOUT_TARGET_BREAK_EVEN_POLICIES,
     BREAKOUT_EXIT_POLICY_MEASURED_MOVE,
-    BREAKOUT_EXIT_POLICY_BREAK_EVEN_AFTER_1R,
-    BREAKOUT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R,
-    BREAKOUT_EXIT_POLICY_SWING_EMA_AFTER_1R,
+    *BREAKOUT_BREAK_EVEN_POLICIES,
+    *BREAKOUT_PULLBACK_LOW_POLICIES,
+    *BREAKOUT_SWING_EMA_POLICIES,
 )
 
 DEFAULT_BREAKOUT_EXIT_POLICY = BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R
@@ -123,6 +194,58 @@ def resolve_exit_policy(
     ):
         return exit_policy or DEFAULT_PULLBACK_COUNT_EXIT_POLICY
     return exit_policy
+
+
+def _parse_breakout_target_policy(policy: str | None) -> float | None:
+    if policy is None:
+        return None
+    prefix = "breakout_target_"
+    if not policy.startswith(prefix) or not policy.endswith("r"):
+        return None
+    body = policy[len(prefix):-1]
+    if "_break_even_after_" in body:
+        return None
+    return _parse_r_multiple_token(body)
+
+
+def _parse_breakout_target_break_even_policy(
+    policy: str | None,
+) -> tuple[float, float] | None:
+    if policy is None:
+        return None
+    prefix = "breakout_target_"
+    marker = "r_break_even_after_"
+    if not policy.startswith(prefix) or marker not in policy or not policy.endswith("r"):
+        return None
+    body = policy[len(prefix):]
+    target_token, trigger_token = body.split(marker, 1)
+    trigger_token = trigger_token[:-1]
+    target_r = _parse_r_multiple_token(target_token)
+    trigger_r = _parse_r_multiple_token(trigger_token)
+    if target_r is None or trigger_r is None:
+        return None
+    return target_r, trigger_r
+
+
+def _parse_breakout_break_even_policy(policy: str | None) -> float | None:
+    prefix = "breakout_break_even_after_"
+    if policy is None or not policy.startswith(prefix) or not policy.endswith("r"):
+        return None
+    return _parse_r_multiple_token(policy[len(prefix):-1])
+
+
+def _parse_breakout_pullback_low_policy(policy: str | None) -> float | None:
+    prefix = "breakout_pullback_low_after_"
+    if policy is None or not policy.startswith(prefix) or not policy.endswith("r"):
+        return None
+    return _parse_r_multiple_token(policy[len(prefix):-1])
+
+
+def _parse_breakout_swing_ema_policy(policy: str | None) -> float | None:
+    prefix = "breakout_swing_ema_after_"
+    if policy is None or not policy.startswith(prefix) or not policy.endswith("r"):
+        return None
+    return _parse_r_multiple_token(policy[len(prefix):-1])
 
 
 def build_exit_plan(
@@ -338,14 +461,13 @@ def build_dynamic_exit_update(
     if initial_risk <= 0:
         return None
 
-    if policy in {
-        BREAKOUT_EXIT_POLICY_BREAK_EVEN_AFTER_1R,
-        BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R,
-    }:
+    target_break_even_policy = _parse_breakout_target_break_even_policy(policy)
+    break_even_trigger_r = _parse_breakout_break_even_policy(policy)
+    if target_break_even_policy is not None or break_even_trigger_r is not None:
         trigger_r = (
-            0.75
-            if policy == BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R
-            else 1.0
+            target_break_even_policy[1]
+            if target_break_even_policy is not None
+            else break_even_trigger_r
         )
         if max_favorable_price < entry_price + initial_risk * trigger_r:
             return None
@@ -357,8 +479,10 @@ def build_dynamic_exit_update(
                 target_reason=policy if current_target_price is not None else None,
             )
         return None
-    if policy == BREAKOUT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R:
-        if max_favorable_price < entry_price + initial_risk:
+
+    pullback_low_trigger_r = _parse_breakout_pullback_low_policy(policy)
+    if pullback_low_trigger_r is not None:
+        if max_favorable_price < entry_price + initial_risk * pullback_low_trigger_r:
             return None
         breakout_context = _breakout_context(bars, signal_time)
         if breakout_context is None:
@@ -368,13 +492,14 @@ def build_dynamic_exit_update(
             return DynamicExitUpdate(
                 stop_price=tightened_stop,
                 target_price=current_target_price,
-                stop_reason=BREAKOUT_EXIT_POLICY_PULLBACK_LOW_AFTER_1R,
+                stop_reason=policy,
                 target_reason=None,
             )
         return None
 
-    if policy == BREAKOUT_EXIT_POLICY_SWING_EMA_AFTER_1R:
-        if max_favorable_price < entry_price + initial_risk:
+    swing_ema_trigger_r = _parse_breakout_swing_ema_policy(policy)
+    if swing_ema_trigger_r is not None:
+        if max_favorable_price < entry_price + initial_risk * swing_ema_trigger_r:
             return None
         if len(ema_values) <= bar_index:
             return None
@@ -420,7 +545,8 @@ def build_dynamic_exit_visualization(
     if strategy_name == "brooks_small_pb_trend":
         policy = SMALL_PB_EXIT_POLICY_SWING_EMA_AFTER_1R
         trigger_reason = "phase1_confirmed_swing_low_break_after_1r"
-        supported_policy = SMALL_PB_EXIT_POLICY_SWING_EMA_AFTER_1R
+        trigger_r = 1.0
+        policy_supported = True
     elif strategy_name == "brooks_breakout_pullback":
         policy = resolve_exit_policy(
             strategy_name=strategy_name,
@@ -428,7 +554,8 @@ def build_dynamic_exit_visualization(
             exit_policy=exit_policy,
         )
         trigger_reason = "phase1_breakout_confirmed_swing_low_break_after_1r"
-        supported_policy = BREAKOUT_EXIT_POLICY_SWING_EMA_AFTER_1R
+        trigger_r = _parse_breakout_swing_ema_policy(policy)
+        policy_supported = trigger_r is not None
     elif strategy_name == "brooks_pullback_count":
         policy = resolve_exit_policy(
             strategy_name=strategy_name,
@@ -436,14 +563,15 @@ def build_dynamic_exit_visualization(
             exit_policy=exit_policy,
         )
         trigger_reason = "phase1_pullback_count_confirmed_swing_low_break_after_1r"
-        supported_policy = PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R
+        trigger_r = 1.0
+        policy_supported = policy == PULLBACK_COUNT_EXIT_POLICY_SWING_EMA_AFTER_1R
     else:
         return None
-    if policy != supported_policy:
+    if not policy_supported or trigger_r is None:
         return None
 
     curr = bars[bar_index]
-    one_r_price = entry_price + initial_risk
+    one_r_price = entry_price + initial_risk * trigger_r
     armed = max_favorable_price >= one_r_price
     ema20 = float(ema_values[bar_index]) if len(ema_values) > bar_index else None
     swing_low_info = _latest_confirmed_swing_low_info(bars, bar_index, lookback=1)
@@ -651,21 +779,16 @@ def _breakout_target_for_policy(
     breakout_context: BreakoutContext,
     entry_price: float,
 ) -> tuple[float | None, str | None]:
-    if policy == BREAKOUT_EXIT_POLICY_TARGET_1R:
-        risk = entry_price - breakout_context.structural_stop
-        return entry_price + risk, BREAKOUT_EXIT_POLICY_TARGET_1R
-    if policy == BREAKOUT_EXIT_POLICY_TARGET_1_5R:
-        risk = entry_price - breakout_context.structural_stop
-        return entry_price + risk * 1.5, BREAKOUT_EXIT_POLICY_TARGET_1_5R
-    if policy == BREAKOUT_EXIT_POLICY_TARGET_2R:
-        risk = entry_price - breakout_context.structural_stop
-        return entry_price + risk * 2.0, BREAKOUT_EXIT_POLICY_TARGET_2R
-    if policy == BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R:
-        risk = entry_price - breakout_context.structural_stop
-        return (
-            entry_price + risk * 2.5,
-            BREAKOUT_EXIT_POLICY_TARGET_2_5R_BREAK_EVEN_AFTER_0_75R,
-        )
+    risk = entry_price - breakout_context.structural_stop
+    target_break_even_policy = _parse_breakout_target_break_even_policy(policy)
+    if target_break_even_policy is not None:
+        target_r, _trigger_r = target_break_even_policy
+        return entry_price + risk * target_r, policy
+
+    target_r = _parse_breakout_target_policy(policy)
+    if target_r is not None:
+        return entry_price + risk * target_r, policy
+
     if policy == BREAKOUT_EXIT_POLICY_MEASURED_MOVE:
         measured_move = breakout_context.breakout_high - breakout_context.breakout_low
         return entry_price + measured_move, BREAKOUT_EXIT_POLICY_MEASURED_MOVE
