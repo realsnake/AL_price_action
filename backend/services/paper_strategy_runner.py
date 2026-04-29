@@ -156,13 +156,21 @@ class Phase1PaperRunner:
         if not self.running:
             return self.status()
 
+        # Do not hold ``self.lock`` while submitting the exit order.
+        # ``execute_order()`` synchronously notifies trade listeners, including
+        # ``self._on_trade_update()``, which also acquires ``self.lock``. Holding
+        # the lock across ``_submit_exit()`` deadlocks the stop request and makes
+        # cron report a TimeoutError even though Alpaca may already have filled
+        # the closing order.
+        should_close = close_position and self.position is not None and self.bars
+        if should_close:
+            await self._submit_exit(
+                exit_price=self.bars[-1]["close"],
+                exit_time=self.bars[-1]["time"],
+                reason="manual_stop",
+            )
+
         async with self.lock:
-            if close_position and self.position is not None and self.bars:
-                await self._submit_exit(
-                    exit_price=self.bars[-1]["close"],
-                    exit_time=self.bars[-1]["time"],
-                    reason="manual_stop",
-                )
             self.running = False
             self.partial_bar = None
             self.partial_slot_time = None
