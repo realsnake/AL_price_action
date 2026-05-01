@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from datetime import timezone
 
@@ -185,6 +186,94 @@ async def test_phase1_paper_runner_enters_on_completed_5m_signal_and_exits_on_se
 
     assert stopped["running"] is False
     assert unsubscribe_calls == [("QQQ", callback)]
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+
+@pytest.mark.asyncio
+async def test_phase1_paper_runner_entry_fill_callback_does_not_deadlock_live_bar(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    subscribed = {}
+    history_bars = [
+        _bar("2025-01-06T14:30:00+00:00", 500.0, 500.4, 499.8, 500.2),
+        _bar("2025-01-06T14:35:00+00:00", 500.2, 500.8, 500.0, 500.6),
+        _bar("2025-01-06T14:40:00+00:00", 500.6, 501.0, 500.5, 500.9),
+    ]
+
+    async def fake_get_analysis_bars(
+        symbol: str,
+        timeframe: str,
+        start: str,
+        end: str | None = None,
+        limit: int = 1000,
+        research_profile: str | None = None,
+    ) -> list[dict]:
+        return history_bars
+
+    async def fake_subscribe(symbol: str, callback):
+        subscribed["callback"] = callback
+
+    async def fake_unsubscribe(symbol: str, callback):
+        return None
+
+    async def fake_execute_order(
+        symbol: str,
+        qty: int,
+        side: str,
+        strategy: str | None = None,
+        reason: str | None = None,
+    ) -> dict:
+        trade_info = {
+            "symbol": symbol,
+            "strategy": strategy,
+            "status": "filled",
+            "side": side,
+            "qty": qty,
+            "price": 501.55,
+            "alpaca_order_id": f"{side}-filled",
+            "reason": reason,
+            "timestamp": "2025-01-06T15:05:01+00:00",
+        }
+        await runner._on_trade_update(trade_info)
+        return trade_info
+
+    async def fake_get_trade_history(limit=50):
+        return []
+
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
+    monkeypatch.setattr(paper_strategy_runner, "get_analysis_bars", fake_get_analysis_bars)
+    monkeypatch.setattr(paper_strategy_runner.market_data, "subscribe", fake_subscribe)
+    monkeypatch.setattr(paper_strategy_runner.market_data, "unsubscribe", fake_unsubscribe)
+    monkeypatch.setattr(paper_strategy_runner, "execute_order", fake_execute_order)
+    monkeypatch.setattr(paper_strategy_runner, "get_trade_history", fake_get_trade_history)
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "get_strategy",
+        lambda name, params=None: _SignalOnBarStrategy("2025-01-06T15:00:00+00:00"),
+    )
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_positions", lambda: [])
+    monkeypatch.setattr(paper_strategy_runner.alpaca_client, "get_orders", lambda status="open": [])
+
+    await paper_strategy_runner.start_phase1_paper_runner(fixed_quantity=25)
+    runner = paper_strategy_runner._phase1_runners[paper_strategy_runner.DEFAULT_PHASE1_STRATEGY]
+    callback = subscribed["callback"]
+
+    live_open = [
+        _bar("2025-01-06T15:00:00+00:00", 501.0, 501.2, 500.9, 501.1),
+        _bar("2025-01-06T15:01:00+00:00", 501.1, 501.3, 501.0, 501.2),
+        _bar("2025-01-06T15:02:00+00:00", 501.2, 501.4, 501.1, 501.3),
+        _bar("2025-01-06T15:03:00+00:00", 501.3, 501.5, 501.2, 501.4),
+        _bar("2025-01-06T15:04:00+00:00", 501.4, 501.6, 501.3, 501.5),
+        _bar("2025-01-06T15:05:00+00:00", 501.5, 501.7, 501.4, 501.55),
+    ]
+
+    for minute_bar in live_open:
+        await asyncio.wait_for(callback("QQQ", minute_bar), timeout=0.5)
+
+    status = paper_strategy_runner.get_phase1_paper_runner_status()
+    assert status["position"]["quantity"] == 25
+    assert status["orders_submitted"] == 1
+
     paper_strategy_runner.reset_phase1_paper_runner()
 
 

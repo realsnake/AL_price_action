@@ -119,6 +119,11 @@ class Phase1PaperRunner:
         self.last_exit: LastExit | None = None
         self.running = False
         self.lock = asyncio.Lock()
+        # Serializes live-bar ingestion without blocking trade-update callbacks.
+        # ``_evaluate_completed_bar()`` can submit orders, and order submission can
+        # synchronously notify ``_on_trade_update()``, which needs ``self.lock``.
+        # Holding ``self.lock`` across live-bar ingestion would therefore deadlock.
+        self.live_bar_lock = asyncio.Lock()
         self.orders_submitted = 0
         self.started_at: str | None = None
         self.last_completed_bar_time: str | None = None
@@ -233,7 +238,7 @@ class Phase1PaperRunner:
 
         self.last_live_bar_at = payload["time"]
 
-        async with self.lock:
+        async with self.live_bar_lock:
             try:
                 await self._ingest_live_bar(payload)
                 self.last_error = None
