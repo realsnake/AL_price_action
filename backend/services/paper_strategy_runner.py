@@ -502,6 +502,14 @@ class Phase1PaperRunner:
             for order in await asyncio.to_thread(alpaca_client.get_orders, "open")
             if order.get("symbol") == self.config.symbol
         }
+        broker_position = next(
+            (
+                position
+                for position in await asyncio.to_thread(alpaca_client.get_positions)
+                if position.get("symbol") == self.config.symbol
+            ),
+            None,
+        )
         recovered_pending = next(
             (
                 trade
@@ -576,8 +584,45 @@ class Phase1PaperRunner:
         if quantity <= 0:
             return
 
+        broker_long_quantity = (
+            max(0, int(float(broker_position.get("qty") or 0)))
+            if broker_position is not None
+            else 0
+        )
+        open_sell_quantity = sum(
+            max(
+                0,
+                int(float(order.get("qty") or 0))
+                - int(float(order.get("filled_qty") or 0)),
+            )
+            for order in open_orders.values()
+            if str(order.get("side") or "").lower() == "sell"
+        )
+        broker_available_quantity = max(0, broker_long_quantity - open_sell_quantity)
+        if broker_available_quantity <= 0:
+            self._record_event(
+                "position_recovery_skipped",
+                "Skipped local position recovery: no broker-available long quantity",
+            )
+            return
+
+        local_quantity = quantity
+        quantity = min(local_quantity, broker_available_quantity)
+        broker_entry_price = (
+            float(broker_position.get("avg_entry") or 0.0)
+            if broker_position is not None
+            else 0.0
+        )
+        local_entry_price = total_buy_cost / local_quantity if total_buy_cost > 0 else 0.0
+        entry_price = (
+            broker_entry_price
+            if broker_entry_price > 0 and quantity != local_quantity
+            else local_entry_price
+        )
+        if entry_price <= 0:
+            entry_price = float(recovered_buys[-1].get("price") or 0.0)
+
         recent_buy = recovered_buys[-1]
-        entry_price = total_buy_cost / quantity if total_buy_cost > 0 else float(recent_buy.get("price") or 0.0)
         recovered_entry_time = str(
             recent_buy.get("created_at")
             or datetime.now(timezone.utc).isoformat()

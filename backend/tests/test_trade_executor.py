@@ -113,6 +113,56 @@ async def test_get_trade_history_refreshes_price_and_status_from_broker(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_broker_rate_limit_uses_warning_and_short_backoff(monkeypatch):
+    trade = _FakeTrade(
+        id=16,
+        symbol="QQQ",
+        side="buy",
+        quantity=100,
+        price=0.0,
+        strategy="brooks_small_pb_trend",
+        signal_reason="entry",
+        status="submitted",
+        alpaca_order_id="ord-rate-limit",
+        created_at=datetime(2025, 1, 6, 15, 1),
+    )
+    session = _FakeSession([trade])
+    calls = []
+    warnings = []
+    exceptions = []
+
+    class FakeLogger:
+        def warning(self, message, *args, **kwargs):
+            warnings.append((message, args, kwargs))
+
+        def exception(self, message, *args, **kwargs):
+            exceptions.append((message, args, kwargs))
+
+        def debug(self, *args, **kwargs):
+            pass
+
+    def raise_rate_limit(order_id):
+        calls.append(order_id)
+        raise RuntimeError('{"code":42910000,"message":"rate limit exceeded"}')
+
+    monkeypatch.setattr(trade_executor, "async_session", _session_factory(session))
+    monkeypatch.setattr(trade_executor, "logger", FakeLogger())
+    monkeypatch.setattr(trade_executor.alpaca_client, "get_order_by_id", raise_rate_limit)
+    monkeypatch.setattr(trade_executor, "_now_monotonic", lambda: 100.0, raising=False)
+    monkeypatch.setattr(trade_executor, "_alpaca_refresh_backoff_until", {}, raising=False)
+
+    first = await trade_executor.get_trade_history(limit=10)
+    second = await trade_executor.get_trade_history(limit=10)
+
+    assert first[0]["status"] == "submitted"
+    assert second[0]["status"] == "submitted"
+    assert calls == ["ord-rate-limit"]
+    assert exceptions == []
+    assert len(warnings) == 1
+    assert "temporarily throttled" in warnings[0][0]
+
+
+@pytest.mark.asyncio
 async def test_execute_order_returns_reconciled_fill_when_available(monkeypatch):
     session = _FakeSession([])
 

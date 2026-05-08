@@ -187,7 +187,8 @@ async def subscribe(symbol: str, callback):
         stream = _get_stream()
         _subscribe_bars(stream, symbol)
         logger.info("Subscribed to bars for %s", symbol)
-    _callbacks[symbol].append(callback)
+    if callback not in _callbacks[symbol]:
+        _callbacks[symbol].append(callback)
 
 
 async def unsubscribe(symbol: str, callback):
@@ -196,10 +197,7 @@ async def unsubscribe(symbol: str, callback):
     if not is_live_stream_enabled():
         return
     if symbol in _callbacks:
-        try:
-            _callbacks[symbol].remove(callback)
-        except ValueError:
-            pass
+        _callbacks[symbol] = [cb for cb in _callbacks[symbol] if cb != callback]
         if not _callbacks[symbol]:
             del _callbacks[symbol]
             stream = _get_stream()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 
 from sqlalchemy import select
@@ -16,6 +17,31 @@ logger = logging.getLogger(__name__)
 
 # Callbacks for trade notifications
 _trade_listeners: list = []
+
+_ALPACA_REFRESH_BACKOFF_SECONDS = 30.0
+_alpaca_refresh_backoff_until: dict[str, float] = {}
+
+
+def _now_monotonic() -> float:
+    return time.monotonic()
+
+
+def _is_transient_alpaca_refresh_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code == 429:
+        return True
+
+    text = str(exc).lower()
+    exc_name = exc.__class__.__name__.lower()
+    return (
+        "429" in text
+        or "rate limit" in text
+        or "too many requests" in text
+        or "readtimeout" in exc_name
+        or "read timed out" in text
+        or "timed out" in text
+    )
 
 
 def add_trade_listener(callback):
@@ -84,19 +110,42 @@ async def _refresh_trades_from_broker(session: AsyncSession, trades: list[Trade]
 
     changed = False
     for trade in trades:
-        if not trade.alpaca_order_id:
+        order_id = trade.alpaca_order_id
+        if not order_id:
             continue
+
+        now = _now_monotonic()
+        backoff_until = _alpaca_refresh_backoff_until.get(order_id, 0.0)
+        if now < backoff_until:
+            logger.debug(
+                "Skipping Alpaca refresh for trade %s during broker backoff",
+                trade.id,
+            )
+            continue
+
         try:
             order = await asyncio.to_thread(
                 alpaca_client.get_order_by_id,
-                trade.alpaca_order_id,
+                order_id,
             )
         except AlpacaNotConfiguredError:
             return
-        except Exception:
+        except Exception as exc:
+            if _is_transient_alpaca_refresh_error(exc):
+                _alpaca_refresh_backoff_until[order_id] = now + _ALPACA_REFRESH_BACKOFF_SECONDS
+                logger.warning(
+                    "Alpaca refresh temporarily throttled/timed out for trade %s; "
+                    "skipping broker refresh for %.0fs: %s",
+                    trade.id,
+                    _ALPACA_REFRESH_BACKOFF_SECONDS,
+                    exc,
+                )
+                continue
+
             logger.exception("Failed to refresh trade %s from Alpaca", trade.id)
             continue
 
+        _alpaca_refresh_backoff_until.pop(order_id, None)
         if _apply_order_snapshot(trade, order):
             changed = True
 

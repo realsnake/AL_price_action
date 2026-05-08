@@ -71,3 +71,46 @@ async def test_unsubscribe_uses_nonblocking_path_on_stream_loop(monkeypatch):
     assert "AAPL" not in market_data._callbacks
     assert "AAPL" not in stream._handlers["bars"]
     assert stream.unsubscribe_calls == [("bars", ["AAPL"])]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_is_idempotent_for_same_callback(monkeypatch):
+    market_data._callbacks.clear()
+    loop = asyncio.get_running_loop()
+    stream = _FakeStream(loop)
+
+    monkeypatch.setattr(market_data, "is_live_stream_enabled", lambda: True)
+    monkeypatch.setattr(market_data, "_get_stream", lambda: stream)
+
+    async def cb(symbol, payload):
+        return None
+
+    await market_data.subscribe("aapl", cb)
+    await market_data.subscribe("aapl", cb)
+    await asyncio.sleep(0)
+
+    assert market_data._callbacks["AAPL"] == [cb]
+    assert stream.subscribe_sent == 1
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_removes_all_duplicate_callback_entries(monkeypatch):
+    loop = asyncio.get_running_loop()
+    stream = _FakeStream(loop)
+    stream._handlers["bars"]["AAPL"] = market_data._on_bar
+
+    async def cb(symbol, payload):
+        return None
+
+    market_data._callbacks.clear()
+    market_data._callbacks["AAPL"] = [cb, cb]
+
+    monkeypatch.setattr(market_data, "is_live_stream_enabled", lambda: True)
+    monkeypatch.setattr(market_data, "_get_stream", lambda: stream)
+
+    await market_data.unsubscribe("aapl", cb)
+    await asyncio.sleep(0)
+
+    assert "AAPL" not in market_data._callbacks
+    assert "AAPL" not in stream._handlers["bars"]
+    assert stream.unsubscribe_calls == [("bars", ["AAPL"])]
