@@ -190,6 +190,144 @@ async def test_phase1_paper_runner_enters_on_completed_5m_signal_and_exits_on_se
 
 
 @pytest.mark.asyncio
+async def test_phase1_runner_blocks_entry_when_same_symbol_already_has_position(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    orders = []
+    entry_bar_time = "2025-01-06T15:00:00+00:00"
+    blocking_runner = paper_strategy_runner.Phase1PaperRunner(
+        paper_strategy_runner.Phase1PaperConfig(strategy="brooks_breakout_pullback")
+    )
+    blocking_runner.running = True
+    blocking_runner.position = paper_strategy_runner.LivePosition(
+        quantity=100,
+        entry_price=501.0,
+        stop_price=491.0,
+        target_price=None,
+        entry_time=entry_bar_time,
+        signal_time=entry_bar_time,
+        reason="existing-position",
+        stop_reason="test-stop",
+        target_reason=None,
+        initial_risk=10.0,
+        max_favorable_price=501.0,
+    )
+    paper_strategy_runner._phase1_runners["brooks_breakout_pullback"] = blocking_runner
+
+    candidate_runner = paper_strategy_runner.Phase1PaperRunner(
+        paper_strategy_runner.Phase1PaperConfig(strategy="brooks_pullback_count")
+    )
+    candidate_runner.running = True
+    candidate_runner.bars = [
+        _bar("2025-01-06T14:50:00+00:00", 500.0, 500.5, 499.8, 500.2),
+        _bar("2025-01-06T14:55:00+00:00", 500.2, 501.0, 500.1, 500.8),
+        _bar(entry_bar_time, 500.8, 501.8, 500.6, 501.5),
+    ]
+    candidate_runner.strategy = _SignalOnBarStrategy(entry_bar_time)
+    paper_strategy_runner._phase1_runners["brooks_pullback_count"] = candidate_runner
+
+    async def fake_execute_order(*args, **kwargs):
+        orders.append((args, kwargs))
+        return {"status": "filled", "qty": 100, "price": 501.5, "alpaca_order_id": "blocked"}
+
+    monkeypatch.setattr(paper_strategy_runner, "execute_order", fake_execute_order)
+
+    await candidate_runner._evaluate_completed_bar(candidate_runner.bars[-1])
+
+    assert orders == []
+    assert candidate_runner.position is None
+    assert any(
+        event.type == "entry_blocked"
+        and "brooks_breakout_pullback" in event.message
+        for event in candidate_runner.recent_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase1_runner_drops_recovered_position_when_same_symbol_already_has_position():
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    recovered_time = "2025-01-06T15:00:00+00:00"
+    blocking_runner = paper_strategy_runner.Phase1PaperRunner(
+        paper_strategy_runner.Phase1PaperConfig(strategy="brooks_breakout_pullback")
+    )
+    blocking_runner.running = True
+    blocking_runner.position = paper_strategy_runner.LivePosition(
+        quantity=100,
+        entry_price=501.0,
+        stop_price=491.0,
+        target_price=None,
+        entry_time=recovered_time,
+        signal_time=recovered_time,
+        reason="existing-position",
+        stop_reason="test-stop",
+        target_reason=None,
+        initial_risk=10.0,
+        max_favorable_price=501.0,
+    )
+    paper_strategy_runner._phase1_runners["brooks_breakout_pullback"] = blocking_runner
+
+    candidate_runner = paper_strategy_runner.Phase1PaperRunner(
+        paper_strategy_runner.Phase1PaperConfig(strategy="brooks_pullback_count")
+    )
+    candidate_runner.position = paper_strategy_runner.LivePosition(
+        quantity=50,
+        entry_price=502.0,
+        stop_price=492.0,
+        target_price=None,
+        entry_time=recovered_time,
+        signal_time=recovered_time,
+        reason="recovered-position",
+        stop_reason="test-stop",
+        target_reason=None,
+        initial_risk=10.0,
+        max_favorable_price=502.0,
+    )
+    paper_strategy_runner._phase1_runners["brooks_pullback_count"] = candidate_runner
+
+    candidate_runner._drop_recovered_position_if_symbol_blocked()
+
+    assert candidate_runner.position is None
+    assert any(
+        event.type == "position_recovery_blocked"
+        and "brooks_breakout_pullback" in event.message
+        for event in candidate_runner.recent_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase1_runner_deduplicates_same_entry_bar_signal(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+    orders = []
+    entry_bar_time = "2025-01-06T15:00:00+00:00"
+    runner = paper_strategy_runner.Phase1PaperRunner(
+        paper_strategy_runner.Phase1PaperConfig(strategy="brooks_small_pb_trend")
+    )
+    runner.running = True
+    runner.bars = [
+        _bar("2025-01-06T14:50:00+00:00", 500.0, 500.5, 499.8, 500.2),
+        _bar("2025-01-06T14:55:00+00:00", 500.2, 501.0, 500.1, 500.8),
+        _bar(entry_bar_time, 500.8, 501.8, 500.6, 501.5),
+    ]
+    runner.strategy = _SignalOnBarStrategy(entry_bar_time)
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"] = runner
+
+    async def fake_execute_order(*args, **kwargs):
+        orders.append((args, kwargs))
+        return {"status": "rejected", "qty": 100, "price": 0.0, "alpaca_order_id": f"ord-{len(orders)}"}
+
+    monkeypatch.setattr(paper_strategy_runner, "execute_order", fake_execute_order)
+
+    await runner._evaluate_completed_bar(runner.bars[-1])
+    runner.pending_order = None
+    await runner._evaluate_completed_bar(runner.bars[-1])
+
+    assert len(orders) == 1
+    assert any(event.type == "entry_duplicate_skipped" for event in runner.recent_events)
+
+
+@pytest.mark.asyncio
 async def test_phase1_paper_runner_entry_fill_callback_does_not_deadlock_live_bar(monkeypatch):
     paper_strategy_runner.reset_phase1_paper_runner()
 

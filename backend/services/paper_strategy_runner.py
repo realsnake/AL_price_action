@@ -131,6 +131,7 @@ class Phase1PaperRunner:
         self.last_trade_update_at: str | None = None
         self.last_error: str | None = None
         self.recent_events: deque[RunnerEvent] = deque(maxlen=40)
+        self._entry_idempotency_keys: set[str] = set()
 
     async def start(self) -> dict:
         start_day = (
@@ -147,6 +148,7 @@ class Phase1PaperRunner:
             raise RuntimeError(f"No historical bars available for {BROOKS_COMBO_LABEL}")
 
         await self._restore_broker_state()
+        self._drop_recovered_position_if_symbol_blocked()
         self.running = True
         self.started_at = _now_utc().isoformat()
         add_trade_listener(self._on_trade_update)
@@ -372,10 +374,28 @@ class Phase1PaperRunner:
                 None,
             )
             if matching_signal is not None:
+                entry_key = self._entry_idempotency_key(bar["time"], matching_signal.reason)
+                if entry_key in self._entry_idempotency_keys:
+                    self._record_event(
+                        "entry_duplicate_skipped",
+                        f"Skipped duplicate entry signal at {bar['time']} ({matching_signal.reason})",
+                    )
+                    return
+
+                blocking_strategy = _same_symbol_active_exposure_strategy(self)
+                if blocking_strategy is not None:
+                    self._record_event(
+                        "entry_blocked",
+                        "Skipped entry because "
+                        f"{blocking_strategy} already has active {self.config.symbol} exposure",
+                    )
+                    return
+
                 self._record_event(
                     "signal_detected",
                     f"Signal at {bar['time']} ({matching_signal.reason})",
                 )
+                self._entry_idempotency_keys.add(entry_key)
                 await self._submit_entry(matching_signal.price, bar["time"], matching_signal.reason)
 
         if self.position is not None and is_session_final_bar_timestamp(bar["time"], 5):
@@ -810,6 +830,33 @@ class Phase1PaperRunner:
                 if side == "sell" and self.position is not None:
                     self.last_error = f"Exit order {status}"
 
+    def _drop_recovered_position_if_symbol_blocked(self) -> None:
+        if self.position is None:
+            return
+        blocking_strategy = _same_symbol_active_exposure_strategy(self)
+        if blocking_strategy is None:
+            return
+        dropped_quantity = self.position.quantity
+        self.position = None
+        self.last_exit = None
+        self._record_event(
+            "position_recovery_blocked",
+            "Dropped recovered local position because "
+            f"{blocking_strategy} already has active {self.config.symbol} exposure "
+            f"({dropped_quantity} shares)",
+        )
+
+    def _entry_idempotency_key(self, bar_time: str, reason: str) -> str:
+        return "|".join(
+            [
+                self.config.symbol.upper(),
+                self.config.strategy,
+                "buy",
+                bar_time,
+                reason,
+            ]
+        )
+
     def _record_event(self, event_type: str, message: str) -> None:
         self.recent_events.append(
             RunnerEvent(
@@ -860,6 +907,22 @@ class Phase1PaperRunner:
 
 _phase1_runners: dict[str, Phase1PaperRunner] = {}
 _phase1_monitor_task: asyncio.Task | None = None
+
+
+def _same_symbol_active_exposure_strategy(candidate_runner: Phase1PaperRunner) -> str | None:
+    symbol = candidate_runner.config.symbol.upper()
+    for strategy, runner in _phase1_runners.items():
+        if runner is candidate_runner:
+            continue
+        if not runner.running:
+            continue
+        if runner.config.symbol.upper() != symbol:
+            continue
+        if runner.position is not None:
+            return strategy
+        if runner.pending_order is not None and runner.pending_order.side == "buy":
+            return strategy
+    return None
 
 
 def reset_phase1_paper_runner() -> None:
