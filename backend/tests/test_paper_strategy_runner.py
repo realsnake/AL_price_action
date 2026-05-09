@@ -1747,9 +1747,49 @@ async def test_restore_desired_phase1_runners_stops_active_runners_after_close(m
     restored = await paper_strategy_runner.restore_desired_phase1_paper_runners()
 
     assert restored == []
-    assert stop_calls == [True]
+    assert stop_calls == [False]
     assert inactive_calls == []
     assert "brooks_small_pb_trend" not in paper_strategy_runner._phase1_runners
+
+
+@pytest.mark.asyncio
+async def test_preclose_exit_stops_active_runners_with_close_position(monkeypatch):
+    paper_strategy_runner.reset_phase1_paper_runner()
+    stop_calls = []
+
+    class FakeRunner:
+        def __init__(self):
+            self.running = True
+            self.config = paper_strategy_runner.Phase1PaperConfig(
+                strategy="brooks_small_pb_trend",
+            )
+
+        async def stop(self, close_position: bool = True):
+            stop_calls.append(close_position)
+            self.running = False
+            return {"running": False}
+
+    paper_strategy_runner._phase1_runners["brooks_small_pb_trend"] = FakeRunner()
+    monkeypatch.setattr(
+        paper_strategy_runner,
+        "_phase1_should_preclose_exit",
+        lambda: True,
+    )
+
+    await paper_strategy_runner._stop_phase1_runners_before_session_close()
+
+    assert stop_calls == [True]
+    assert "brooks_small_pb_trend" not in paper_strategy_runner._phase1_runners
+
+
+def test_phase1_should_preclose_exit_only_during_final_window():
+    before_window = datetime.fromisoformat("2025-01-06T20:58:00+00:00")
+    inside_window = datetime.fromisoformat("2025-01-06T20:59:00+00:00")
+    after_close = datetime.fromisoformat("2025-01-06T21:00:01+00:00")
+
+    assert paper_strategy_runner._phase1_should_preclose_exit(before_window) is False
+    assert paper_strategy_runner._phase1_should_preclose_exit(inside_window) is True
+    assert paper_strategy_runner._phase1_should_preclose_exit(after_close) is False
 
 
 @pytest.mark.asyncio

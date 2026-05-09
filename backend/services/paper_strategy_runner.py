@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PHASE1_STRATEGY = "brooks_small_pb_trend"
 BROOKS_COMBO_LABEL = "QQQ 5m Brooks 组合"
+PHASE1_PRE_CLOSE_EXIT_SECONDS = 90
 SUPPORTED_PHASE1_STRATEGIES = {
     "brooks_small_pb_trend",
     "brooks_breakout_pullback",
@@ -1151,7 +1152,11 @@ async def _stop_phase1_runners_for_closed_market() -> None:
     ]
     for runner in active_runners:
         try:
-            await runner.stop(close_position=True)
+            # Do not submit DAY market close orders after RTH has already closed:
+            # Alpaca accepts them for the next session, leaving an overnight
+            # position plus a dangling open order. Pre-close liquidation is
+            # handled by _stop_phase1_runners_before_session_close().
+            await runner.stop(close_position=False)
         except Exception:
             logger.exception(
                 "Failed to stop %s after market close: %s",
@@ -1161,6 +1166,43 @@ async def _stop_phase1_runners_for_closed_market() -> None:
             continue
         if not runner.running:
             _phase1_runners.pop(runner.config.strategy, None)
+
+
+async def _stop_phase1_runners_before_session_close() -> None:
+    if not _phase1_should_preclose_exit():
+        return
+
+    active_runners = [
+        runner for runner in list(_phase1_runners.values()) if runner.running
+    ]
+    for runner in active_runners:
+        try:
+            await runner.stop(close_position=True)
+        except Exception:
+            logger.exception(
+                "Failed to pre-close %s before market close: %s",
+                BROOKS_COMBO_LABEL,
+                runner.config.strategy,
+            )
+            continue
+        if not runner.running:
+            _phase1_runners.pop(runner.config.strategy, None)
+
+
+def _phase1_should_preclose_exit(now: datetime | None = None) -> bool:
+    seconds_until_close = _seconds_until_session_close(now)
+    return (
+        seconds_until_close is not None
+        and 0 <= seconds_until_close <= PHASE1_PRE_CLOSE_EXIT_SECONDS
+    )
+
+
+def _seconds_until_session_close(now: datetime | None = None) -> int | None:
+    current = (now or _now_utc()).astimezone(MARKET_TZ)
+    if current.weekday() >= 5 or not _is_trading_day(current.date()):
+        return None
+    session_close = _session_close_for(current.date())
+    return int((session_close - current).total_seconds())
 
 
 async def start_phase1_paper_runner_monitor(interval_seconds: int = 30) -> None:
@@ -1173,6 +1215,7 @@ async def start_phase1_paper_runner_monitor(interval_seconds: int = 30) -> None:
             try:
                 await market_data.start_stream()
                 await trade_updates.start_trade_updates_stream()
+                await _stop_phase1_runners_before_session_close()
                 await restore_desired_phase1_paper_runners()
                 await _poll_stale_phase1_runner_bars()
             except asyncio.CancelledError:
