@@ -49,6 +49,23 @@ ALPACA_BASE_URL=https://paper-api.alpaca.markets
 PAPER_TRADING=true
 ```
 
+如需切到 IBKR 做小额真实交易实验，保持 Alpaca 行情配置不变，并额外显式开启交易券商与风控开关：
+
+```bash
+BROKER=ibkr
+IBKR_HOST=127.0.0.1
+IBKR_PORT=7496
+IBKR_CLIENT_ID=17
+IBKR_ACCOUNT=U1234567
+IBKR_LIVE_TRADING_ENABLED=true
+IBKR_ORDER_TRANSMIT=true
+IBKR_ALLOWED_SYMBOLS=QQQ
+IBKR_MAX_ORDER_USD=750
+IBKR_DAILY_MAX_NOTIONAL_USD=1500
+```
+
+IBKR 路径只允许手动 `limit` 单，并要求前端勾选 live confirmation。Brooks 自动 runner 仍限制在 `BROKER=alpaca` 的纸盘路径。详细步骤见 `docs/ibkr-live-trading.md`。
+
 ### 3. 启动后端
 
 ```bash

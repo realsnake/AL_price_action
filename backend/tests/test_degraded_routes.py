@@ -109,25 +109,25 @@ def test_market_quote_returns_503_when_alpaca_unavailable(client, monkeypatch):
 @pytest.mark.parametrize(
     "method,path,patch_target,patch_name,body",
     [
-        ("get", "/api/trading/account", trading_router.alpaca_client, "get_account", None),
+        ("get", "/api/trading/account", trading_router.broker_client, "get_account", None),
         (
             "get",
             "/api/trading/positions",
-            trading_router.alpaca_client,
+            trading_router.broker_client,
             "get_positions",
             None,
         ),
         (
             "get",
             "/api/trading/orders?status=open",
-            trading_router.alpaca_client,
+            trading_router.broker_client,
             "get_orders",
             None,
         ),
         (
             "delete",
             "/api/trading/order/order-123",
-            trading_router.alpaca_client,
+            trading_router.broker_client,
             "cancel_order",
             None,
         ),
@@ -165,7 +165,7 @@ def test_trading_snapshot_routes_return_503_when_broker_times_out(
     def _raise_timeout(*args, **kwargs):
         raise TimeoutError("paper api timed out")
 
-    monkeypatch.setattr(trading_router.alpaca_client, patch_name, _raise_timeout)
+    monkeypatch.setattr(trading_router.broker_client, patch_name, _raise_timeout)
 
     response = client.get(path)
 

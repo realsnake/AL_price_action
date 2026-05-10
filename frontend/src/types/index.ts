@@ -55,6 +55,19 @@ export interface Order {
   created_at: string;
 }
 
+export interface TradingBrokerStatus {
+  broker: "alpaca" | "ibkr" | string;
+  configured: boolean;
+  live_trading_enabled?: boolean;
+  order_transmit?: boolean;
+  host?: string;
+  port?: number;
+  client_id?: number;
+  account?: string | null;
+  allowed_symbols?: string[];
+  max_order_usd?: number;
+}
+
 export interface StrategyInfo {
   name: string;
   description: string;

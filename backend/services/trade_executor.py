@@ -4,14 +4,17 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import IBKR_ALLOW_STRATEGY_TRADING, IBKR_DAILY_MAX_NOTIONAL_USD
 from database import async_session
 from models import Trade
 from services.alpaca_client import AlpacaNotConfiguredError, alpaca_client
+from services.broker_client import broker_client
+from services.ibkr_client import IBKRNotConfiguredError, IBKRSafetyError
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,10 @@ _alpaca_refresh_backoff_until: dict[str, float] = {}
 
 def _now_monotonic() -> float:
     return time.monotonic()
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _is_transient_alpaca_refresh_error(exc: Exception) -> bool:
@@ -65,6 +72,8 @@ async def _notify_trade(trade_info: dict):
 
 
 def _serialize_trade(t: Trade) -> dict:
+    broker_order_id = t.alpaca_order_id
+    broker = _broker_name_for_order_id(broker_order_id)
     return {
         "id": t.id,
         "symbol": t.symbol,
@@ -75,8 +84,16 @@ def _serialize_trade(t: Trade) -> dict:
         "signal_reason": t.signal_reason,
         "status": t.status,
         "alpaca_order_id": t.alpaca_order_id,
+        "broker_order_id": broker_order_id,
+        "broker": broker,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
+
+
+def _broker_name_for_order_id(order_id: str | None) -> str:
+    if order_id and str(order_id).startswith("ibkr:"):
+        return "ibkr"
+    return "alpaca"
 
 
 def _apply_order_snapshot(trade: Trade, order: dict) -> bool:
@@ -105,13 +122,15 @@ def _apply_order_snapshot(trade: Trade, order: dict) -> bool:
 
 
 async def _refresh_trades_from_broker(session: AsyncSession, trades: list[Trade]) -> None:
-    if not alpaca_client.is_configured():
+    if not broker_client.is_configured():
         return
 
     changed = False
     for trade in trades:
         order_id = trade.alpaca_order_id
         if not order_id:
+            continue
+        if not broker_client.owns_order_id(order_id):
             continue
 
         now = _now_monotonic()
@@ -125,10 +144,10 @@ async def _refresh_trades_from_broker(session: AsyncSession, trades: list[Trade]
 
         try:
             order = await asyncio.to_thread(
-                alpaca_client.get_order_by_id,
+                broker_client.get_order_by_id,
                 order_id,
             )
-        except AlpacaNotConfiguredError:
+        except (AlpacaNotConfiguredError, IBKRNotConfiguredError):
             return
         except Exception as exc:
             if _is_transient_alpaca_refresh_error(exc):
@@ -174,27 +193,57 @@ async def refresh_trade_statuses(
         return [_serialize_trade(t) for t in trades]
 
 
-async def execute_order(symbol: str, qty: int, side: str, strategy: str | None = None, reason: str | None = None) -> dict:
-    """Execute an order via Alpaca and record it in the database."""
-    result = await asyncio.to_thread(alpaca_client.submit_order, symbol, qty, side)
-
+async def execute_order(
+    symbol: str,
+    qty: int,
+    side: str,
+    strategy: str | None = None,
+    reason: str | None = None,
+    *,
+    order_type: str = "market",
+    limit_price: float | None = None,
+    confirm_live: bool = False,
+) -> dict:
+    """Execute an order via the active broker and record it in the database."""
+    normalized_symbol = symbol.upper()
+    normalized_side = side.lower()
     async with async_session() as session:
+        await _validate_order_before_submit(
+            session,
+            normalized_symbol,
+            qty,
+            normalized_side,
+            strategy=strategy,
+            order_type=order_type,
+            limit_price=limit_price,
+        )
+        result = await asyncio.to_thread(
+            broker_client.submit_order,
+            normalized_symbol,
+            qty,
+            normalized_side,
+            order_type=order_type,
+            limit_price=limit_price,
+            confirm_live=confirm_live,
+        )
+        broker_order_id = result.get("id")
+        submitted_price = _submitted_price_for_trade(result, limit_price)
         trade = Trade(
-            symbol=symbol,
-            side=side,
+            symbol=normalized_symbol,
+            side=normalized_side,
             quantity=qty,
-            price=0.0,  # Market order - price filled later
+            price=submitted_price,
             strategy=strategy,
             signal_reason=reason,
             status=result.get("status", "submitted"),
-            alpaca_order_id=result.get("id"),
+            alpaca_order_id=broker_order_id,
         )
         session.add(trade)
         await session.commit()
 
         try:
             await _refresh_trades_from_broker(session, [trade])
-        except AlpacaNotConfiguredError:
+        except (AlpacaNotConfiguredError, IBKRNotConfiguredError):
             pass
 
         trade_id = trade.id
@@ -210,10 +259,68 @@ async def execute_order(symbol: str, qty: int, side: str, strategy: str | None =
         "reason": reason,
         "status": trade.status,
         "alpaca_order_id": trade.alpaca_order_id,
-        "timestamp": datetime.utcnow().isoformat(),
+        "broker_order_id": trade.alpaca_order_id,
+        "broker": _broker_name_for_order_id(trade.alpaca_order_id),
+        "timestamp": _now_utc().isoformat(),
     }
     await _notify_trade(trade_info)
     return trade_info
+
+
+async def _validate_order_before_submit(
+    session: AsyncSession,
+    symbol: str,
+    qty: int,
+    side: str,
+    *,
+    strategy: str | None,
+    order_type: str,
+    limit_price: float | None,
+) -> None:
+    if broker_client.name != "ibkr":
+        return
+    if strategy is not None and not IBKR_ALLOW_STRATEGY_TRADING:
+        raise IBKRSafetyError(
+            "IBKR strategy trading is disabled; use manual orders for live experiments"
+        )
+    if order_type.lower() != "limit" or limit_price is None:
+        return
+
+    current_notional = await _ibkr_daily_notional(session)
+    next_notional = qty * float(limit_price)
+    if current_notional + next_notional > IBKR_DAILY_MAX_NOTIONAL_USD:
+        raise IBKRSafetyError(
+            "daily IBKR notional "
+            f"${current_notional + next_notional:.2f} exceeds "
+            f"IBKR_DAILY_MAX_NOTIONAL_USD ${IBKR_DAILY_MAX_NOTIONAL_USD:.2f}"
+        )
+
+
+async def _ibkr_daily_notional(session: AsyncSession) -> float:
+    result = await session.execute(select(Trade))
+    trades = result.scalars().all()
+    today = _now_utc().date()
+    total = 0.0
+    for trade in trades:
+        order_id = getattr(trade, "alpaca_order_id", None)
+        created_at = getattr(trade, "created_at", None)
+        if not order_id or not str(order_id).startswith("ibkr:") or created_at is None:
+            continue
+        if created_at.date() != today:
+            continue
+        total += abs(float(getattr(trade, "price", 0.0) or 0.0)) * int(
+            getattr(trade, "quantity", 0) or 0
+        )
+    return total
+
+
+def _submitted_price_for_trade(result: dict, limit_price: float | None) -> float:
+    filled_avg_price = result.get("filled_avg_price")
+    if filled_avg_price not in (None, ""):
+        return float(filled_avg_price)
+    if _broker_name_for_order_id(result.get("id")) == "ibkr" and limit_price is not None:
+        return float(limit_price)
+    return 0.0
 
 
 async def get_trade_history(limit: int = 50) -> list[dict]:
@@ -281,6 +388,8 @@ async def apply_trade_update(update) -> None:
                     "reason": trade.signal_reason,
                     "status": trade.status,
                     "alpaca_order_id": trade.alpaca_order_id,
+                    "broker_order_id": trade.alpaca_order_id,
+                    "broker": _broker_name_for_order_id(trade.alpaca_order_id),
                     "timestamp": timestamp.isoformat(),
                 }
             )

@@ -18,6 +18,7 @@ import {
   getQuote,
   getPhase1PaperStrategyStatuses,
   getPositions,
+  getTradingBrokerStatus,
 } from "./services/api";
 import type {
   Bar,
@@ -27,6 +28,7 @@ import type {
   Timeframe,
   PaperStrategyStatus,
   MarketQuote,
+  TradingBrokerStatus,
 } from "./types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "1D"];
@@ -94,6 +96,8 @@ export default function App() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [tradingBrokerStatus, setTradingBrokerStatus] =
+    useState<TradingBrokerStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notifications, setNotifications] = useState<string[]>([]);
@@ -169,6 +173,15 @@ export default function App() {
     }
   }, []);
 
+  const fetchTradingBrokerStatus = useCallback(async () => {
+    try {
+      const next = await getTradingBrokerStatus();
+      setTradingBrokerStatus(next);
+    } catch {
+      setTradingBrokerStatus(null);
+    }
+  }, []);
+
   const fetchPaperRunnerStatuses = useCallback(async () => {
     try {
       const next = await getPhase1PaperStrategyStatuses();
@@ -216,6 +229,14 @@ export default function App() {
     }, 15000);
     return () => window.clearInterval(id);
   }, [fetchAccountData]);
+
+  useEffect(() => {
+    fetchTradingBrokerStatus();
+    const id = window.setInterval(() => {
+      void fetchTradingBrokerStatus();
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [fetchTradingBrokerStatus]);
 
   useEffect(() => {
     fetchPaperRunnerStatuses();
@@ -608,7 +629,11 @@ export default function App() {
                   account={account}
                   positions={positions}
                   currentSymbol={symbol}
-                  onOrderPlaced={fetchAccountData}
+                  brokerStatus={tradingBrokerStatus}
+                  onOrderPlaced={() => {
+                    void fetchAccountData();
+                    void fetchTradingBrokerStatus();
+                  }}
                 />
               </>
             ) : (

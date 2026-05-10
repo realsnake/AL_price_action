@@ -31,6 +31,7 @@ from services.research_profile import (
     market_time,
 )
 from services.strategy_engine import get_strategy
+from services.broker_client import broker_client
 from services.trade_executor import (
     add_trade_listener,
     execute_order,
@@ -992,6 +993,8 @@ async def _start_phase1_paper_runner(
 ) -> dict:
     if not PAPER_TRADING:
         raise RuntimeError(f"{BROOKS_COMBO_LABEL} requires PAPER_TRADING=true")
+    if broker_client.name != "alpaca":
+        raise RuntimeError(f"{BROOKS_COMBO_LABEL} requires BROKER=alpaca")
     if strategy not in SUPPORTED_PHASE1_STRATEGIES:
         raise ValueError(f"Unsupported {BROOKS_COMBO_LABEL} strategy: {strategy}")
     existing_runner = _phase1_runners.get(strategy)
@@ -1352,6 +1355,8 @@ def get_phase1_paper_runner_readiness() -> dict:
     warnings: list[str] = []
     if not PAPER_TRADING:
         warnings.append("PAPER_TRADING is disabled")
+    if broker_client.name != "alpaca":
+        warnings.append("BROKER=alpaca is required for paper strategy runners")
     if not alpaca_configured:
         warnings.append("Alpaca credentials are not configured")
     if alpaca_configured and account_status != "ok":
@@ -1365,6 +1370,7 @@ def get_phase1_paper_runner_readiness() -> dict:
 
     return {
         "ready": PAPER_TRADING
+        and broker_client.name == "alpaca"
         and alpaca_configured
         and account_status == "ok"
         and market_stream_running

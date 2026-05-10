@@ -13,6 +13,7 @@ import type {
   TradeHistoryEntry,
   PaperStrategyReadiness,
   MarketQuote,
+  TradingBrokerStatus,
 } from "../types";
 
 const api = axios.create({ baseURL: "/api" });
@@ -59,8 +60,27 @@ export async function getOrders(status = "open"): Promise<Order[]> {
   return data;
 }
 
-export async function submitOrder(symbol: string, qty: number, side: string) {
-  const { data } = await api.post("/trading/order", { symbol, qty, side });
+export async function getTradingBrokerStatus(): Promise<TradingBrokerStatus> {
+  const { data } = await api.get("/trading/broker");
+  return data;
+}
+
+export async function submitOrder(
+  symbol: string,
+  qty: number,
+  side: string,
+  options?: {
+    order_type?: "market" | "limit";
+    limit_price?: number | null;
+    confirm_live?: boolean;
+  },
+) {
+  const { data } = await api.post("/trading/order", {
+    symbol,
+    qty,
+    side,
+    ...options,
+  });
   return data;
 }
 

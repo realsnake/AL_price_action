@@ -653,6 +653,21 @@ async def test_phase1_paper_runner_requires_paper_mode(monkeypatch):
     paper_strategy_runner.reset_phase1_paper_runner()
 
 
+@pytest.mark.asyncio
+async def test_phase1_paper_runner_requires_alpaca_broker(monkeypatch):
+    class FakeBrokerClient:
+        name = "ibkr"
+
+    paper_strategy_runner.reset_phase1_paper_runner()
+    monkeypatch.setattr(paper_strategy_runner, "PAPER_TRADING", True)
+    monkeypatch.setattr(paper_strategy_runner, "broker_client", FakeBrokerClient())
+
+    with pytest.raises(RuntimeError, match="requires BROKER=alpaca"):
+        await paper_strategy_runner.start_phase1_paper_runner()
+
+    paper_strategy_runner.reset_phase1_paper_runner()
+
+
 @pytest.mark.parametrize(
     "strategy_name",
     [
